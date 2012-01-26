@@ -1,3 +1,6 @@
+# emacs: -*- mode: python; py-indent-offset: 2; indent-tabs-mode: nil -*-
+# vi: set ft=python sts=4 ts=4 sw=4 et:
+
 import numpy as np
 import scipy.signal as sig
     
@@ -131,7 +134,7 @@ def sample_correlation(data, masks,
     return intra_corr, inter_corr, intra_dists, inter_dists
 
 
-def mutli_sample_correlation(datas, masks, voxel_size=(1,1,1),
+def multi_sample_correlation(datas, masks, voxel_size=(1,1,1),
                              nsamples=1000):
     """
     samples the voxel correlation in the data using masks of interest
@@ -198,3 +201,188 @@ def mutli_sample_correlation(datas, masks, voxel_size=(1,1,1),
         intra_dists[mi] = dists[np.tri(dists.shape[0],k=-1,dtype=bool)]
 
     return intra_corr, intra_dists
+
+
+def sample_correlation_maps(data, mask, seeds_mask, nseeds=-1, 
+                            sampling_method='mask', 
+                            rois_sampling_ratio = 0.1):
+
+    datam = data[mask]
+
+    #normalizing the timeseries
+    for ts in datam:
+        mean = ts.mean()
+        std = ts.std()
+        if std==0:
+            ts[...] = 0
+        else:
+            ts[...] = (ts-mean)/std
+    
+    samp_map = np.zeros(np.count_nonzero(mask), bool)
+    seeds_mask = seeds_mask[mask]
+    if sampling_method == 'rois':
+        indices = np.empty(0,int)
+        roi_ids = np.unique(seeds_mask)[1:]
+        for roi_id in roi_ids:
+            nvox = np.count_nonzero(seeds_mask==roi_id)
+            rois_ind = np.nonzero(seeds_mask==roi_id)[0]
+            nsamp = int(np.floor(rois_sampling_ratio*nvox))
+            randind = rois_ind[np.random.permutation(rois_ind.size)[:nsamp]]
+            indices = np.concatenate((indices,randind))
+        del randind
+        nseeds = indices.size
+        print 'sampling %d seeds in %d rois' % (nseeds, roi_ids.size)
+    else:
+        indices = np.nonzero(seeds_mask[mask])[0]
+        if nseeds < 0:
+            nseeds = indices.shape[0]
+
+        randind = np.random.permutation(indices.shape[0])[:nseeds]
+        indices = indices[randind]
+        del randind
+
+    sample_map=np.zeros(mask.shape, np.int8)
+    sample_map[[ind[indices] for ind in np.nonzero(mask)]] = 1
+    cmaps = np.empty((datam.shape[0],nseeds),np.float16)
+    nsamples = datam.shape[1] - 1.0
+    for k,l in enumerate(indices):
+        cmaps[:,k] = datam.dot(datam[l])/nsamples
+    return cmaps, sample_map
+
+
+def seed_correlation(s,m):
+
+    import pycuda.autoinit
+    import pycuda.driver as drv
+    from pycuda.compiler import SourceModule
+    from pycuda import gpuarray
+
+    
+    block_size = int(2**np.floor(np.log2(s.shape[0])))
+    print block_size
+    out_type='float'
+    in_type='float'
+    s = (s-s.mean())/s.std()
+    neutral = 0
+    kernel_code_template = """
+#define BLOCK_SIZE %(block_size)d
+typedef %(out_type)s out_type;
+typedef %(in_type)s in_type;
+
+__device__ void warpReduce(volatile out_type *sdata, unsigned int tid)
+{
+	if (BLOCK_SIZE >= 64) sdata[tid] += sdata[tid + 32];
+	if (BLOCK_SIZE >= 32) sdata[tid] += sdata[tid + 16];
+	if (BLOCK_SIZE >= 16) sdata[tid] += sdata[tid + 8];
+	if (BLOCK_SIZE >= 8) sdata[tid] += sdata[tid + 4];
+	if (BLOCK_SIZE >= 4) sdata[tid] += sdata[tid + 2];
+	if (BLOCK_SIZE >= 2) sdata[tid] += sdata[tid + 1];
+}
+extern "C"
+__global__
+void seedCorr(out_type *out, in_type *s, in_type *m, int n)
+{
+	__shared__ out_type sum[BLOCK_SIZE];
+	__shared__ out_type sqsum[BLOCK_SIZE];
+	__shared__ out_type covsum[BLOCK_SIZE];
+	
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x*n + tid;
+	
+	if (tid+blockDim.x < n){
+		unsigned int ofst=i+blockDim.x;
+		sum[tid] = m[i] + m[ofst];
+		sqsum[tid] = m[i]*m[i] + m[ofst]*m[ofst];
+		covsum[tid] = m[i]*s[tid] + m[ofst]*s[ofst];
+	}
+	else{
+		sum[tid]  = m[i];
+		sqsum[tid] = m[i]*m[i];
+		covsum[tid] = m[i]*s[tid];
+	}
+	__syncthreads();
+	for(unsigned int k=BLOCK_SIZE/4; k>32; k>>=1){
+		if (tid < k){
+			sum[tid] = sum[tid] + sum[tid + k];
+			sqsum[tid] = sqsum[tid] + sqsum[tid + k];
+			sqsum[tid] = sqsum[tid] + sqsum[tid + k];
+		}
+		__syncthreads();
+	}
+	if(tid < 32){
+		warpReduce(sum,tid);
+		warpReduce(sqsum,tid);
+		warpReduce(covsum,tid);
+	}
+	if (tid == 0)
+		out[blockIdx.x] =  1.0; /*sum[0];  covsum/sumsq-sum*sum/(BLOCK_SIZE-1);*/
+}"""
+    src = kernel_code_template % {
+        "out_type": out_type,
+        "in_type": in_type,
+        "block_size": block_size,
+        "neutral": neutral
+        }
+
+    print src
+    mod = SourceModule(src)
+    func = mod.get_function('seedCorr')
+    cc = gpuarray.empty((m.shape[0]), np.float32)
+    nframe = np.uint32(m.shape[-1])
+    func(cc, drv.In(s.astype(np.float32)), drv.In(m.astype(np.float32)), nframe,
+         block = (block_size,1,1), grid=(m.shape[0],1))
+    return cc
+
+def cuda_correlation():
+    
+    import pycuda.autoinit
+    import pycuda.driver as drv
+    import numpy as np
+    from pycuda.compiler import SourceModule
+    
+    mod = SourceModule("""
+
+__global__ void
+gpuRho(float *out, float *in, unsigned int n, unsigned int m){
+    __shared__ float Xs[16][16];
+    __shared__ float Ys[16][16];
+    int bx = blockIdx.x, by = blockIdx.y;
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int xBegin = bx * 16 * m;
+    int yBegin = by * 16 * m;
+    int yEnd = yBegin + m - 1;
+    int x, y, k, o;
+    float a1, a2, a3, a4, a5;
+    float avgX, avgY, varX, varY, cov, rho;
+    a1 = a2 = a3 = a4 = a5 = 0.0;
+    for(y=yBegin,x=xBegin;y<=yEnd; y+=16,x+=16){
+        Ys[ty][tx] = in[y + ty*m + tx];
+        Xs[tx][ty] = in[x + ty*m + tx];
+        //*** note the transpose of Xs
+        __syncthreads();
+        for(k=0;k<16;k++){
+            a1 += Xs[k][tx];
+            a2 += Ys[ty][k];
+            a3 += Xs[k][tx] * Xs[k][tx];
+            a4 += Ys[ty][k] * Ys[ty][k];
+            a5 += Xs[k][tx] * Ys[ty][k];
+        }
+        __syncthreads();
+    }
+    avgX = a1/m;
+    avgY = a2/m;
+    varX = (a3-avgX*avgX*m)/(m-1);
+    varY = (a4-avgY*avgY*m)/(m-1);
+    cov = (a5-avgX*avgY*m)/(m-1);
+    rho = cov/sqrtf(varX*varY);
+    o = by*16*n + ty*n + bx*16 + tx;
+    out[o] = rho;
+}""")
+
+    gpucorr = mod.get_function("gpuRho")
+    return gpucorr
+#    corr = np.array((in_data.shape[0],)*2)
+#    n,m = in_data.shape
+#    gpucorr(drv.Out(corr.astype(np.float32)), drv.In(in_data),
+#            drv.In(n), drv.In(m))
+#    return corr

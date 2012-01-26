@@ -89,7 +89,8 @@ def regress_out_motion_parameters(nii,motion_in,mask,
             beta = reg_pinv.dot(ts)
             ts -= reg.dot(beta[:-1])
 
-    cdata = np.zeros(nii.shape)
+    cdata = np.empty(nii.shape)
+    cdata.fill(np.nan)
     cdata[mask] = data
     return cdata, regressors
 
