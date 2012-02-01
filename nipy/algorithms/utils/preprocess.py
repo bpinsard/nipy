@@ -11,7 +11,6 @@ def motion_parameter_standardize(motion_in,motion_source='spm'):
         return np.concatenate((motion_in[:,3:6],motion_in[:,:3]/180*np.pi),
                                 axis=1)
 
-
 def regress_out_motion_parameters(nii,motion_in,mask,
                                   regressors_type = 'global',
                                   regressors_transform = 'bw_derivatives',
@@ -21,9 +20,17 @@ def regress_out_motion_parameters(nii,motion_in,mask,
 
     data = nii.get_data()
     mask = mask>0 
-    mask[np.isnan(data).sum(-1)>0] = False
     data = data[mask]
+    m = np.isnan(data).sum(1)
 
+    #correct for isolated nan values in mask timeseries due to realign
+    # linearly interpolate in ts and extrapolate at ends of ts
+    # TODO:optimize
+    y = lambda z: z.nonzero()[0]
+    for i in n.nonzero()[0]:
+        nans = np.isnan(data[i])
+        data[i] = np.interp(y(nans),y(~nans),data[i,~nans])
+    
     if global_signal:
         gs_tc = data.mean(0).reshape((nt,1))
         gs_tc -= gs_tc.mean() #center
