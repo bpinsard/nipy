@@ -27,7 +27,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
     # linearly interpolate in ts and extrapolate at ends of ts
     # TODO:optimize
     y = lambda z: z.nonzero()[0]
-    for i in n.nonzero()[0]:
+    for i in m.nonzero()[0]:
         nans = np.isnan(data[i])
         data[i] = np.interp(y(nans),y(~nans),data[i,~nans])
     
