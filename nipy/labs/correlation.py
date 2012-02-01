@@ -203,21 +203,27 @@ def multi_sample_correlation(datas, masks, voxel_size=(1,1,1),
     return intra_corr, intra_dists
 
 
+def moments(x, axis=None):
+    mean = x.mean(axis=axis)[:,np.newaxis]
+    var = x.var(axis=axis)[:,np.newaxis]
+    std = var**0.5
+    skewness = ((x - mean)**3).mean(axis=axis) / std**3
+    kurtosis = ((x - mean)**4).mean(axis=axis) / std**4
+    return [mean, std, skewness, kurtosis]
+
 def sample_correlation_maps(data, mask, seeds_mask, nseeds=-1, 
                             sampling_method='mask', 
                             rois_sampling_ratio = 0.1):
 
-    datam = data[mask]
+    datam = data[mask].copy()
 
     #normalizing the timeseries
-    for ts in datam:
-        mean = ts.mean()
-        std = ts.std()
-        if std==0:
-            ts[...] = 0
-        else:
-            ts[...] = (ts-mean)/std
-    
+
+    datam -= datam.mean(1)[:,np.newaxis]
+    std = datam.std(1)
+    datam /= std[:,np.newaxis]
+    datam[np.isnan(datam)]=0
+        
     samp_map = np.zeros(np.count_nonzero(mask), bool)
     seeds_mask = seeds_mask[mask]
     if sampling_method == 'rois':
@@ -233,7 +239,7 @@ def sample_correlation_maps(data, mask, seeds_mask, nseeds=-1,
         nseeds = indices.size
         print 'sampling %d seeds in %d rois' % (nseeds, roi_ids.size)
     else:
-        indices = np.nonzero(seeds_mask[mask])[0]
+        indices = np.nonzero(seeds_mask)[0]
         if nseeds < 0:
             nseeds = indices.shape[0]
 
@@ -246,9 +252,18 @@ def sample_correlation_maps(data, mask, seeds_mask, nseeds=-1,
     cmaps = np.empty((datam.shape[0],nseeds),np.float16)
     nsamples = datam.shape[1] - 1.0
     for k,l in enumerate(indices):
-        cmaps[:,k] = datam.dot(datam[l])/nsamples
+        cmaps[:,k] = seed_correlation(datam[l],datam).get()#datam.dot(datam[l])/nsamples
     return cmaps, sample_map
 
+
+def seed_corr(s,m):
+    s=(s-s.mean())/s.std()
+    m -= m.mean(1)[:,np.newaxis]
+    std = m.std(1)
+    m /= std[:,np.newaxis]
+    m[np.isnan(m)] = 0
+    
+    return m.dot(s)/float(s.shape[0])
 
 def seed_correlation(s,m):
 
@@ -257,43 +272,43 @@ def seed_correlation(s,m):
     from pycuda.compiler import SourceModule
     from pycuda import gpuarray
 
-    
     block_size = int(2**np.floor(np.log2(s.shape[0])))
-    print block_size
     out_type='float'
     in_type='float'
-    s = (s-s.mean())/s.std()
-    neutral = 0
+    s -= s.astype(np.float32).mean()
+    s /= np.sqrt(np.square(s).sum()/float(s.size))
     kernel_code_template = """
 #define BLOCK_SIZE %(block_size)d
 typedef %(out_type)s out_type;
 typedef %(in_type)s in_type;
 
+template <unsigned int blockSize>
 __device__ void warpReduce(volatile out_type *sdata, unsigned int tid)
 {
-	if (BLOCK_SIZE >= 64) sdata[tid] += sdata[tid + 32];
-	if (BLOCK_SIZE >= 32) sdata[tid] += sdata[tid + 16];
-	if (BLOCK_SIZE >= 16) sdata[tid] += sdata[tid + 8];
-	if (BLOCK_SIZE >= 8) sdata[tid] += sdata[tid + 4];
-	if (BLOCK_SIZE >= 4) sdata[tid] += sdata[tid + 2];
-	if (BLOCK_SIZE >= 2) sdata[tid] += sdata[tid + 1];
+	if (blockSize >= 64) sdata[tid] += sdata[tid + 32];
+	if (blockSize >= 32) sdata[tid] += sdata[tid + 16];
+	if (blockSize >= 16) sdata[tid] += sdata[tid + 8];
+	if (blockSize >= 8) sdata[tid] += sdata[tid + 4];
+	if (blockSize >= 4) sdata[tid] += sdata[tid + 2];
+	if (blockSize >= 2) sdata[tid] += sdata[tid + 1];
 }
-extern "C"
-__global__
-void seedCorr(out_type *out, in_type *s, in_type *m, int n)
+
+template <unsigned int blockSize>
+__device__
+void seedCorr_cpp(out_type *out, in_type *s, in_type *m, unsigned int n)
 {
-	__shared__ out_type sum[BLOCK_SIZE];
-	__shared__ out_type sqsum[BLOCK_SIZE];
-	__shared__ out_type covsum[BLOCK_SIZE];
+	__shared__ out_type sum[blockSize];
+	__shared__ out_type sqsum[blockSize];
+	__shared__ out_type covsum[blockSize];
 	
 	unsigned int tid = threadIdx.x;
 	unsigned int i = blockIdx.x*n + tid;
 	
-	if (tid+blockDim.x < n){
-		unsigned int ofst=i+blockDim.x;
+	if (tid+BLOCK_SIZE < n){
+		unsigned int ofst=i+blockSize;
 		sum[tid] = m[i] + m[ofst];
 		sqsum[tid] = m[i]*m[i] + m[ofst]*m[ofst];
-		covsum[tid] = m[i]*s[tid] + m[ofst]*s[ofst];
+		covsum[tid] = m[i]*s[tid] + m[ofst]*s[tid+blockDim.x];
 	}
 	else{
 		sum[tid]  = m[i];
@@ -301,35 +316,179 @@ void seedCorr(out_type *out, in_type *s, in_type *m, int n)
 		covsum[tid] = m[i]*s[tid];
 	}
 	__syncthreads();
-	for(unsigned int k=BLOCK_SIZE/4; k>32; k>>=1){
-		if (tid < k){
-			sum[tid] = sum[tid] + sum[tid + k];
-			sqsum[tid] = sqsum[tid] + sqsum[tid + k];
-			sqsum[tid] = sqsum[tid] + sqsum[tid + k];
-		}
-		__syncthreads();
-	}
+        if(blockSize >= 512){
+          if(tid < 256){
+	    sum[tid] += sum[tid + 256];
+            sqsum[tid] += sqsum[tid + 256];
+	    covsum[tid] += covsum[tid + 256];
+          }
+	  __syncthreads();
+        }
+        if(blockSize >= 256){
+          if(tid < 128){
+	    sum[tid] += sum[tid + 128];
+            sqsum[tid] += sqsum[tid + 128];
+	    covsum[tid] += covsum[tid + 128];
+          }
+	  __syncthreads();
+        }
+        if(blockSize >= 128){
+          if(tid < 64){
+	    sum[tid] += sum[tid + 64];
+            sqsum[tid] += sqsum[tid + 64];
+	    covsum[tid] += covsum[tid + 64];
+          }
+	  __syncthreads();
+        }
+
 	if(tid < 32){
-		warpReduce(sum,tid);
-		warpReduce(sqsum,tid);
-		warpReduce(covsum,tid);
+		warpReduce<blockSize>(sum,tid);
+		warpReduce<blockSize>(sqsum,tid);
+		warpReduce<blockSize>(covsum,tid);
 	}
-	if (tid == 0)
-		out[blockIdx.x] =  1.0; /*sum[0];  covsum/sumsq-sum*sum/(BLOCK_SIZE-1);*/
-}"""
+	if (tid == 0){
+		float varx = (sqsum[0]-sum[0]*sum[0]/n)/n;
+		float cov = covsum[0]/n;
+		out[blockIdx.x] = cov/sqrtf(varx);
+	}
+}
+extern "C" {
+__global__
+void seedCorr(out_type *out, in_type *s, in_type *m, unsigned int n)
+{
+   seedCorr_cpp<BLOCK_SIZE>(out, s, m, n);
+}
+} """
     src = kernel_code_template % {
         "out_type": out_type,
         "in_type": in_type,
         "block_size": block_size,
-        "neutral": neutral
+        }
+    mod = SourceModule(src,no_extern_c=True)
+    func = mod.get_function('seedCorr')
+    cc = gpuarray.empty((m.shape[0]), np.float32)
+    nframe = np.uint32(m.shape[-1])
+    func(cc, drv.In(s.astype(np.float32)), drv.In(m.astype(np.float32)),nframe,
+         block = (block_size,1,1), grid=(m.shape[0],1))
+    return cc
+
+def seeds_correlation(idx,m):
+
+    import pycuda.autoinit
+    import pycuda.driver as drv
+    from pycuda.compiler import SourceModule
+    from pycuda import gpuarray
+
+    
+#    block_size = int(2**np.floor(np.log2(s.shape[0])))
+    out_type='float'
+    in_type='float'
+    sum_kernel_tpl = """
+#define BLOCK_SIZE %(block_size)d
+typedef %(out_type)s out_type;
+typedef %(in_type)s in_type;
+
+template <unsigned int blockSize>
+__device__ void warpReduce(volatile out_type *sdata, unsigned int tid)
+{
+	if (blockSize >= 64) sdata[tid] += sdata[tid + 32];
+	if (blockSize >= 32) sdata[tid] += sdata[tid + 16];
+	if (blockSize >= 16) sdata[tid] += sdata[tid + 8];
+	if (blockSize >= 8) sdata[tid] += sdata[tid + 4];
+	if (blockSize >= 4) sdata[tid] += sdata[tid + 2];
+	if (blockSize >= 2) sdata[tid] += sdata[tid + 1];
+}
+
+template <unsigned int blockSize>
+__device__
+void sums_cpp(out_type *sum_out, out_type *sqsum_out, 
+                   in_type *m, unsigned int n)
+{
+	__shared__ out_type sum[blockSize];
+	__shared__ out_type sqsum[blockSize];
+	
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x*n + tid;
+	
+	if (tid+BLOCK_SIZE < n){
+		unsigned int ofst=i+blockSize;
+		sum[tid] = m[i] + m[ofst];
+		sqsum[tid] = m[i]*m[i] + m[ofst]*m[ofst];
+	}
+	else{
+		sum[tid]  = m[i];
+		sqsum[tid] = m[i]*m[i];
+	}
+	__syncthreads();
+        if(blockSize >= 512){
+          if(tid < 256){
+	    sum[tid] += sum[tid + 256];
+            sqsum[tid] += sqsum[tid + 256];
+          }
+	  __syncthreads();
+        }
+        if(blockSize >= 256){
+          if(tid < 128){
+	    sum[tid] += sum[tid + 128];
+            sqsum[tid] += sqsum[tid + 128];
+          }
+	  __syncthreads();
+        }
+        if(blockSize >= 128){
+          if(tid < 64){
+	    sum[tid] += sum[tid + 64];
+            sqsum[tid] += sqsum[tid + 64];
+          }
+	  __syncthreads();
         }
 
-    print src
+	if(tid < 32){
+		warpReduce<blockSize>(sum,tid);
+		warpReduce<blockSize>(sqsum,tid);
+	}
+	if (tid == 0){
+		sum_out[blockIdx.x] = sum[0];
+		sqsum_out[blockIdx.x] = sqsum[0];
+	}
+}
+
+
+template <unsigned int blockSize>
+__device__
+void seedCorr_cpp(out_type *corr, in_type *m, unsigned int *sid,unsigned int n)
+{
+  __shared__ out_type sum[blockSize];
+  __shared__ out_type sqsum[blockSize];
+  
+  unsigned int tid = threadIdx.x;
+  unsigned int i = blockIdx.x*n + tid;
+
+  
+  
+}
+
+extern "C" {
+__global__
+void sums(out_type *out, in_type *s, in_type *m, unsigned int n)
+{
+   sums_cpp<BLOCK_SIZE>(out, s, m, n);
+}
+__global__
+void seedCorr(out_type *out, in_type *s, in_type *m, unsigned int n)
+{
+   seedCorr_cpp<BLOCK_SIZE>(out, s, m, n);
+}
+} """
+    src = kernel_code_template % {
+        "out_type": out_type,
+        "in_type": in_type,
+        "block_size": block_size,
+        }
     mod = SourceModule(src)
     func = mod.get_function('seedCorr')
     cc = gpuarray.empty((m.shape[0]), np.float32)
     nframe = np.uint32(m.shape[-1])
-    func(cc, drv.In(s.astype(np.float32)), drv.In(m.astype(np.float32)), nframe,
+    func(cc, drv.In(s.astype(np.float32)), drv.In(m.astype(np.float32)),nframe,
          block = (block_size,1,1), grid=(m.shape[0],1))
     return cc
 
