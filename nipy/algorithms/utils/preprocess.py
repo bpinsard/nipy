@@ -59,14 +59,16 @@ def regress_out_motion_parameters(nii,motion_in,mask,
             ts -= regressors.dot(beta[:-1])
             
     else:
-        motion_mats = np.array([regaff.matrix44(m) for m in motion_in])
         
-        indices = np.nonzero(mask>0)
+        voxels_motion = compute_voxels_motion(motion_in,mask,nii.get_affine())
+
+#        motion_mats = np.array([regaff.matrix44(m) for m in motion_in])
+#        indices = np.nonzero(mask>0)
         #homogeneous indices
-        indices = np.concatenate((indices,np.ones((1,indices[0].shape[0]))))
-        world_coords = nii.get_affine().dot(indices)
-        voxels_motion = np.array([m.dot(world_coords) for m in motion_mats])
-        voxels_motion = voxels_motion.transpose((2,0,1))
+#        indices = np.concatenate((indices,np.ones((1,indices[0].shape[0]))))
+#        world_coords = nii.get_affine().dot(indices)
+#        voxels_motion = np.array([m.dot(world_coords) for m in motion_mats])
+#        voxels_motion = voxels_motion.transpose((2,0,1))
         
         if regressors_type == 'voxelwise_translation':
             regressors = voxels_motion[...,:3]
@@ -76,7 +78,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
             regressors = np.dot(np.linalg.inv(nii.get_affine()),
                                 voxels_motion.transpose((0,2,1)))[slicing_axis]
         if regressors.ndim < 3:
-            regressors = regressors.reshape(regressors.shape+(1,))
+            regressors = regressors[:,np.newaxis]
         regsh = regressors.shape
         if regressors_transform == 'bw_derivatives':
             regressors = np.concatenate(
@@ -101,6 +103,18 @@ def regress_out_motion_parameters(nii,motion_in,mask,
     cdata[mask] = data
     return cdata, regressors
 
+
+def compute_voxels_motion(motion, mask, affine):
+    motion_mats = np.array([regaff.matrix44(m) for m in motion])
+    
+    indices = np.nonzero(mask>0)
+    #homogeneous indices
+    indices = np.concatenate((indices,np.ones((1,indices[0].shape[0]))))
+    world_coords = affine.dot(indices)
+    voxels_motion = np.array([m.dot(world_coords) for m in motion_mats])
+    voxels_motion = voxels_motion.transpose((2,0,1))
+    
+    return voxels_motion
 
 def scrubbing_badframes(data,motion,mask,
                         head_radius = 50):
