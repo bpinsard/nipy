@@ -211,14 +211,39 @@ def moments(x, axis=None):
     kurtosis = ((x - mean)**4).mean(axis=axis) / std**4
     return [mean, std, skewness, kurtosis]
 
+
+def sample_voxels(seeds_mask, nseeds=-1,
+                  sampling_method='mask',
+                  rois_sampling_ratio = 0.1):
+    if sampling_method == 'rois':
+        indices = np.empty(0, int)
+        roi_ids = np.unique(seeds_mask)[1:]
+        for roi_id in roi_ids:
+            nvox = np.count_nonzero(seeds_mask==roi_id)
+            rois_ind = np.nonzero(seeds_mask==roi_id)[0]
+            nsamp = int(np.floor(rois_sampling_ratio*nvox))
+            randind = rois_ind[np.random.permutation(rois_ind.size)[:nsamp]]
+            indices = np.concatenate((indices,randind))
+        del randind
+        nseeds = indices.size
+    else:
+        indices = np.nonzero(seeds_mask)[0]
+        if nseeds < 0:
+            nseeds = indices.shape[0]
+
+        randind = np.random.permutation(indices.shape[0])[:nseeds]
+        indices = indices[randind]
+        del randind
+    return indices
+
 def sample_correlation_maps(data, mask, seeds_mask, nseeds=-1, 
                             sampling_method='mask', 
                             rois_sampling_ratio = 0.1):
 
+    samp_map = np.zeros(np.count_nonzero(mask), bool)
     datam = data[mask].copy()
 
     #normalizing the timeseries
-
     datam -= datam.mean(1)[:,np.newaxis]
     std = datam.std(1)
     datam /= std[:,np.newaxis]
@@ -373,6 +398,13 @@ void seedCorr(out_type *out, in_type *s, in_type *m, unsigned int n)
     return cc
 
 def seeds_correlation(idx,m):
+    x = m-m.mean(-1)[...,np.newaxis]
+    xx = np.sqrt(np.sum(x**2,-1))
+    xy = np.dot(x,x[idx].T)
+    return xy / np.outer(xx,xx[idx])
+
+
+def seeds_correlation_cuda(idx,m):
 
     import pycuda.autoinit
     import pycuda.driver as drv
@@ -462,8 +494,11 @@ void seedCorr_cpp(out_type *corr, in_type *m, unsigned int *sid,unsigned int n)
   
   unsigned int tid = threadIdx.x;
   unsigned int i = blockIdx.x*n + tid;
-
   
+  for(unsigned int k=0; k<n ; k++){
+     
+  }
+
   
 }
 
@@ -472,6 +507,7 @@ __global__
 void sums(out_type *out, in_type *s, in_type *m, unsigned int n)
 {
    sums_cpp<BLOCK_SIZE>(out, s, m, n);
+
 }
 __global__
 void seedCorr(out_type *out, in_type *s, in_type *m, unsigned int n)
