@@ -87,9 +87,17 @@ class Image4d(object):
         tr_slices : inter-slice repetition time, same as tr for slices
         start   : starting acquisition time respective to the implicit
                   time origin
-        slice_order : string or array
-        slice_info : a tuple with slice axis as the first element and
-          direction as the second, for instance (2, 1)
+        slice_order : str or array-like, optional
+            If str, one of {'ascending', 'descending'}.  If array-like, then the
+            order in which the slices were collected in time.
+        interleaved : bool, optional
+            Whether slice acquisition order is interleaved.  Ignored if
+            `slice_order` is array-like.
+        slice_info : None or tuple, optional
+            None, or a tuple with slice axis as the first element and direction
+            as the second, for instance (2, 1).  If None, then guess the slice
+            axis, and direction, as the closest to the z axis, as estimated from
+            the affine.
         """
         self.affine = np.asarray(affine)
         self.tr = float(tr)
@@ -147,7 +155,7 @@ class Image4d(object):
                 aux.reverse()
             self.slice_order = np.array(aux)
         else:
-            self.slice_order = np.asarray(self.slice_order)
+            self.slice_order = np.asarray(self._slice_order)
 
     def z_to_slice(self, z):
         """
