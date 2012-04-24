@@ -125,7 +125,7 @@ def compute_voxels_motion(motion, mask, affine):
 
 def scrubbing_badframes(data, motion, mask,
                         head_radius = 50):
-    data = data[mask]
+    data = data[mask].astype(np.float32)
     
     dvars=np.empty(data.shape[-1])
     dvars[0]=0
@@ -155,7 +155,9 @@ def scrub_data(nii,motion,mask,
         vox_size = np.sqrt(np.square(nii.get_affine()[:3,:3]).sum(0)).mean()
         fd_threshold = vox_size/2
     if drms_threshold < 0:
+        print dvars.std(), dvars.mean()
         drms_threshold = otsu(dvars)
+        print 'Threshold DRMS %f' % drms_threshold
         #TODO: check how this perform in good runs
     fd_mask = (fd<fd_threshold)
     drms_mask = (dvars<drms_threshold)
