@@ -3,7 +3,10 @@
 import numpy as np
 import scipy.stats as sp_stats
 
-from ..algorithms.utils.affines import apply_affine
+# Use the nibabel image object
+from nibabel import Nifti1Image as Image
+from nibabel.affines import apply_affine
+
 from ..algorithms.graph.field import field_from_graph_and_data
 from ..algorithms.graph.graph import wgraph_from_3d_grid
 from ..algorithms.statistics import empirical_pvalue
@@ -13,9 +16,6 @@ from .group.permutation_test import \
 
 # FIXME: rename permutation_test_onesample class
 #so that name starts with upper case
-
-# Use the brifti image object
-from nibabel import Nifti1Image as Image
 
 
 ###############################################################################
@@ -54,7 +54,7 @@ def cluster_stats(zimg, mask, height_th, height_control='fpr',
     This works only with three dimensional data
     """
     # Masking
-    if len(mask.get_shape()) > 3:
+    if len(mask.shape) > 3:
         xyz = np.where((mask.get_data() > 0).squeeze())
         zmap = zimg.get_data().squeeze()[xyz]
     else:
@@ -104,7 +104,7 @@ def cluster_stats(zimg, mask, height_th, height_control='fpr',
     clusters.sort(cmp=smaller)
 
     # FDR-corrected p-values
-    fdr_pvalue = empirical_pvalue.all_fdr_gaussian(zmap)[above_th]
+    fdr_pvalue = empirical_pvalue.gaussian_fdr(zmap)[above_th]
 
     # Default "nulls"
     if not 'zmax' in nulls:
@@ -187,7 +187,7 @@ def get_3d_peaks(image, mask=None, threshold=0., nn=18, order_th=0):
         data = image.get_data().ravel()[bmask > 0]
         xyz = np.array(np.where(bmask > 0)).T
     else:
-        shape = image.get_shape()
+        shape = image.shape
         data = image.get_data().ravel()
         xyz = np.reshape(np.indices(shape), (3, np.prod(shape))).T
     affine = image.get_affine()

@@ -28,7 +28,7 @@ import get_data_light
 import nipy.labs.glm
 from nipy.modalities.fmri.design_matrix import make_dmtx
 from nipy.modalities.fmri.experimental_paradigm import \
-    load_protocol_from_csv_file
+    load_paradigm_from_csv_file
 from nipy.labs.viz import plot_map, cm
 
 #######################################
@@ -53,8 +53,8 @@ conditions = ['damier_H', 'damier_V', 'clicDaudio', 'clicGaudio', 'clicDvideo',
               'phraseaudio']
 
 # confounds
-hrf_model = 'Canonical With Derivative'
-drift_model = "Cosine"
+hrf_model = 'canonical with derivative'
+drift_model = "cosine"
 hfcut = 128
 
 # write directory
@@ -66,7 +66,7 @@ print 'Computation will be performed in temporary directory: %s' % swd
 ########################################
 
 print 'Loading design matrix...'
-paradigm = load_protocol_from_csv_file(paradigm_file, session='0.0')
+paradigm = load_paradigm_from_csv_file(paradigm_file, session='0.0')
 
 design_matrix = make_dmtx(frametimes, paradigm, hrf_model=hrf_model,
                           drift_model=drift_model, hfcut=hfcut)
