@@ -49,8 +49,8 @@ def cluster_stats(zimg, mask, height_th, height_control='fpr',
     cluster_th: cluster size threshold
     null_s : cluster-level calibration method: None|'rft'|array
 
-    Note
-    ----
+    Notes
+    -----
     This works only with three dimensional data
     """
     # Masking
@@ -260,12 +260,12 @@ def onesample_test(data_images, vardata_images, mask_images, stat_id,
                                        stat_id=stat_id)
 
     # Compute z-map image
-    zmap = np.zeros(data_images[0].get_shape()).squeeze()
+    zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = ptest.zscore()
     zimg = Image(zmap, data_images[0].get_affine())
 
     # Compute mask image
-    maskimg = Image(mask, data_images[0].get_affine())
+    maskimg = Image(mask.astype(np.int8), data_images[0].get_affine())
 
     # Multiple comparisons
     if permutations <= 0:
@@ -309,7 +309,7 @@ def twosample_test(data_images, vardata_images, mask_images, labels, stat_id,
             stat_id=stat_id)
 
     # Compute z-map image
-    zmap = np.zeros(data_images[0].get_shape()).squeeze()
+    zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = ptest.zscore()
     zimg = Image(zmap, data_images[0].get_affine())
 
@@ -356,7 +356,7 @@ def linear_model_fit(data_images, mask_images, design_matrix, vector):
     c = G.contrast(vector)
 
     # Compute z-map image
-    zmap = np.zeros(data_images[0].get_shape()).squeeze()
+    zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = c.zscore()
     zimg = Image(zmap, data_images[0].get_affine())
 
@@ -384,12 +384,12 @@ class LinearModel(object):
         nomask = mask == None
         if nomask:
             self.xyz = None
-            self.axis = len(data[0].get_shape()) - 1
+            self.axis = len(data[0].shape) - 1
         else:
             self.xyz = np.where(mask.get_data() > 0)
             self.axis = 1
 
-        self.spatial_shape = data[0].get_shape()[0: - 1]
+        self.spatial_shape = data[0].shape[0: -1]
         self.affine = data[0].get_affine()
 
         self.glm = []

@@ -21,8 +21,8 @@ It has three examples
   axis, and returns an Image with the same axes
 
 
-Note
-----
+Notes
+-----
 
 In these loaded Images, 't' is both an axis name and a world coordinate name so
 it is not ambiguous to say 't' axis. It is slightly ambiguous to say 'x+LR' axis
@@ -129,7 +129,7 @@ def image_call(img, function, inaxis='t', outaxis='new'):
     new_coordmap = rolled_img.coordmap.renamed_domain({inaxis: outaxis})
     new_image = Image(newdata, new_coordmap)
     # we have to roll the axis back
-    axis_index = img.axes.index(inaxis)
+    axis_index = img.axes.index(inaxis) + 1
     return rollimg(new_image, 0, axis_index)
 
 
