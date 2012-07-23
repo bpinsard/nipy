@@ -112,7 +112,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
 
 
 def compute_voxels_motion(motion, mask, affine):
-    motion_mats = np.array([regaff.matrix44(m) for m in motion])
+    motion_mats = np.array([regaff.to_matrix44(m) for m in motion])
     
     indices = np.nonzero(mask>0)
     #homogeneous indices
