@@ -99,9 +99,7 @@ def cluster_stats(zimg, mask, height_th, height_control='fpr',
                              'depth': d[sorted]})
 
     ## Sort clusters by descending size order
-    def smaller(c1, c2):
-        return int(np.sign(c2['size'] - c1['size']))
-    clusters.sort(cmp=smaller)
+    clusters.sort(key=lambda c : c['size'], reverse=True)
 
     # FDR-corrected p-values
     fdr_pvalue = empirical_pvalue.gaussian_fdr(zmap)[above_th]
@@ -174,7 +172,7 @@ def get_3d_peaks(image, mask=None, threshold=0., nn=18, order_th=0):
 
     Returns
     -------
-    peaks, a list of dictionray, where each dic has the fields:
+    peaks, a list of dictionaries, where each dict has the fields:
     vals, map value at the peak
     order, topological order of the peak
     ijk, array of shape (1,3) grid coordinate of the peak

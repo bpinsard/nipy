@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
@@ -15,6 +16,7 @@ from nibabel.data import get_nipy_user_dir
 
 NIPY_DIR = get_nipy_user_dir()
 DATA_DIR = os.path.join(NIPY_DIR, 'tests', 'data')
+
 
 def get_second_level_dataset():
     """ Lightweight dataset for multi-subject analysis
