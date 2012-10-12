@@ -168,7 +168,7 @@ class RealignSliceAlgorithm(object):
         """
         Resample a particular slice group on the (sub-sampled) working
         grid.
-
+        
         x,y,z,t are "head" grid coordinates
         X,Y,Z,T are "scanner" grid coordinates
         """
@@ -180,29 +180,44 @@ class RealignSliceAlgorithm(object):
         if self.gm_fmap_values != None:
             slg_gm_vox[:,slice_axis] += self.gm_fmap_values*self.fmap_scale
             slg_wm_vox[:,slice_axis] += self.wm_fmap_values*self.fmap_scale
-
+            
         sg = self.slice_groups[sg]
         tst = self.timestamps
         sa = self.slice_axis
-        T = np.concatenate(
+        t_gm = np.concatenate(
             [self.scanner_time(
                     slg_gm_vox[slg_gm_vox[:,sa]>sg[0][1],sa],tst[sg[0][0]])]+
             [self.scanner_time(
                     slg_gm_vox[:,self.slice_axis],
                     tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
             [self.scanner_time(
-                    slg_gm_vox[slg_gm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])]+
-            ))
-         
-        wm_values = np.empty(slg_wm_vox.shape[0])
+                    slg_gm_vox[slg_gm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])]))
+        t_wm = np.concatenate(
+            [self.scanner_time(
+                    slg_wm_vox[slg_wm_vox[:,sa]>sg[0][1],sa],tst[sg[0][0]])]+
+            [self.scanner_time(
+                    slg_wm_vox[:,self.slice_axis],
+                    tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
+            [self.scanner_time(
+                    slg_wm_vox[slg_wm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])]))
+        
         gm_values = np.empty(slg_gm_vox.shape[0])
-        _cspline_sample4d(wm_values,
-                          self.cbspline,
-                          slg_gm_vox[:,0], slg_gm_vox[:,1], slg_gm_vox[:,2],T,
-                          mx=EXTRAPOLATE_SPACE,
-                          my=EXTRAPOLATE_SPACE,
-                          mz=EXTRAPOLATE_SPACE,
-                          mt=EXTRAPOLATE_TIME)
+        wm_values = np.empty(slg_wm_vox.shape[0])
+        _cspline_sample4d(
+            gm_values,self.cbspline,
+            slg_gm_vox[:,0], slg_gm_vox[:,1], slg_gm_vox[:,2],t_gm,
+            mx=EXTRAPOLATE_SPACE,
+            my=EXTRAPOLATE_SPACE,
+            mz=EXTRAPOLATE_SPACE,
+            mt=EXTRAPOLATE_TIME)
+        _cspline_sample4d(
+            wm_values,self.cbspline,
+            slg_wm_vox[:,0], slg_wm_vox[:,1], slg_wm_vox[:,2],t_wm,
+            mx=EXTRAPOLATE_SPACE,
+            my=EXTRAPOLATE_SPACE,
+            mz=EXTRAPOLATE_SPACE,
+            mt=EXTRAPOLATE_TIME)
+
 
     def resample_full_data(self):
         if VERBOSE:
