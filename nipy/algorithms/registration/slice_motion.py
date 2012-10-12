@@ -21,7 +21,7 @@ from scipy.ndimage import convolve1d, gaussian_filter
 def extract_boundaries(wmseg,bbr_dist,fmap=None):
     
     wmdata = wmseg.get_data()
-    wmsum = wmdata.copy()
+    wmsum = (wmdata>0.5).astype(np.int16)
     gradient = np.empty(wmdata.shape+(3,))
     for axis in xrange(wmdata.ndim): #convolve separable
         convolve1d(wmsum,np.ones(3),axis,wmsum)
@@ -29,7 +29,7 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
         order[axis] = 1
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
     boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
-    n_bnd_pts = boundaries.sum()
+    n_bnd_pts = np.count_nonzero(boundaries)
     coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts),))
     coords_mm = wmseg.get_affine().dot(coords).T
     voxsize = np.sqrt((wmseg.get_affine()[:3,:3]**2).sum(0))
@@ -42,19 +42,19 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
     if fmap != None:
         fmap_spline = _cspline_transform(fmap.get_data())
         fmap_inv_aff = np.linalg.inv(fmap.get_affine())
-        fmap_wmvox = np.dot(fmap_inv_aff,
-                            np.concatenate((wmcoords,np.ones(n_bnd_pts)),1),)
-        fmap_gmvox = np.dot(fmap_inv_aff,
-                            np.concatenate((gmcoords,np.ones(n_bnd_pts)),1),)
+        fmap_wmvox = np.dot(
+            fmap_inv_aff,np.concatenate((wmcoords,np.ones((n_bnd_pts,1))),1).T)
+        fmap_gmvox = np.dot(
+            fmap_inv_aff,np.concatenate((gmcoords,np.ones((n_bnd_pts,1))),1).T)
         wm_fmap_values = np.empty(n_bnd_pts)
         gm_fmap_values = np.empty(n_bnd_pts)
         _cspline_sample3d(
             wm_fmap_values,fmap_spline,
-            wm_fmap_values[:,0],wm_fmap_values[:,1],wm_fmap_values[:,2],
+            fmap_wmvox[0,:],fmap_wmvox[1,:],fmap_wmvox[2,:],
             mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
         _cspline_sample3d(
-            wm_fmap_values,fmap_spline,
-            wm_fmap_values[:,0],wm_fmap_values[:,1],wm_fmap_values[:,2],
+            gm_fmap_values,fmap_spline,
+            fmap_gmvox[0,:],fmap_gmvox[1,:],fmap_gmvox[2,:],
             mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
     return wmcoords,gmcoords,wm_fmap_values,gm_fmap_values
 
@@ -107,21 +107,23 @@ class RealignSliceAlgorithm(object):
                  gtol=GTOL,
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
-                 maxfun=MAXFUN):
+                 maxfun=MAXFUN,
+                 refscan=REFSCAN):
 
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
         self.wmcoords,self.gmcoords,self.wm_fmap_values,gm_fmap_values = extract_boundaries(wmseg,bbr_dist,fmap)
-        self.data = np.zeros([masksize, self.nscans], dtype='double')
 
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
         self.inv_affine = np.linalg.inv(self.affine)
         #defines bunch of slice for with same affine is estimated
         if slice_groups == None:
-            self.slice_groups=[((t,0),(t,self.dims[im4d.slice_axis])) for t in self.nscans]
+            self.slice_groups=[((t,0),(t,self.dims[im4d.slice_axis])) for t in range(self.nscans)]
+            self.parts=self.nscans
         else:
             self.slice_groups=slice_groups
+            self.parts=len(slice_groups)
         if transforms == None:
             self.transforms = [affine_class() for sg in self.slice_groups]
         else:
@@ -156,12 +158,15 @@ class RealignSliceAlgorithm(object):
                       maxiter=maxiter,
                       maxfun=maxfun)
 
+        self.wm_values = np.empty(self.wmcoords.shape[0])
+        self.gm_values = np.empty(self.gmcoords.shape[0])
+
         # Auxiliary array for realignment estimation
-        self._res = np.zeros(masksize, dtype='double')
-        self._res0 = np.zeros(masksize, dtype='double')
-        self._aux = np.zeros(masksize, dtype='double')
-        self.A = np.zeros((masksize, self.transforms[0].param.size),
-                          dtype='double')
+#        self._res = np.zeros(masksize, dtype='double')
+#        self._res0 = np.zeros(masksize, dtype='double')
+#        self._aux = np.zeros(masksize, dtype='double')
+#        self.A = np.zeros((masksize, self.transforms[0].param.size),
+#                          dtype='double')
         self._pc = None
 
     def resample(self, sg):
@@ -172,6 +177,7 @@ class RealignSliceAlgorithm(object):
         x,y,z,t are "head" grid coordinates
         X,Y,Z,T are "scanner" grid coordinates
         """
+        print 'resampling....'
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
         ref2fmri = np.dot(inv_trans,self.inv_affine)
         slg_gm_vox = np.dot(ref2fmri,self.gmcoords)
@@ -191,7 +197,7 @@ class RealignSliceAlgorithm(object):
                     slg_gm_vox[:,self.slice_axis],
                     tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
             [self.scanner_time(
-                    slg_gm_vox[slg_gm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])]))
+                    slg_gm_vox[slg_gm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])])
         t_wm = np.concatenate(
             [self.scanner_time(
                     slg_wm_vox[slg_wm_vox[:,sa]>sg[0][1],sa],tst[sg[0][0]])]+
@@ -199,19 +205,17 @@ class RealignSliceAlgorithm(object):
                     slg_wm_vox[:,self.slice_axis],
                     tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
             [self.scanner_time(
-                    slg_wm_vox[slg_wm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])]))
+                    slg_wm_vox[slg_wm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])])
         
-        gm_values = np.empty(slg_gm_vox.shape[0])
-        wm_values = np.empty(slg_wm_vox.shape[0])
         _cspline_sample4d(
-            gm_values,self.cbspline,
+            self.gm_values,self.cbspline,
             slg_gm_vox[:,0], slg_gm_vox[:,1], slg_gm_vox[:,2],t_gm,
             mx=EXTRAPOLATE_SPACE,
             my=EXTRAPOLATE_SPACE,
             mz=EXTRAPOLATE_SPACE,
             mt=EXTRAPOLATE_TIME)
         _cspline_sample4d(
-            wm_values,self.cbspline,
+            self.wm_values,self.cbspline,
             slg_wm_vox[:,0], slg_wm_vox[:,1], slg_wm_vox[:,2],t_wm,
             mx=EXTRAPOLATE_SPACE,
             my=EXTRAPOLATE_SPACE,
@@ -255,35 +259,6 @@ class RealignSliceAlgorithm(object):
         self.optimizer_kwargs.setdefault('maxfun', MAXFUN)
         self.use_derivatives = use_derivatives(self.optimizer)
 
-    def init_instant_motion(self, t):
-        """
-        Pre-compute and cache some constants (at fixed time) for
-        repeated computations of the alignment energy.
-
-        The idea is to decompose the average temporal variance via:
-
-        V = (n-1)/n V* + (n-1)/n^2 (x-m*)^2
-
-        with x the considered volume at time t, and m* the mean of all
-        resampled volumes but x. Only the second term is variable when
-
-        one volumes while the others are fixed. A similar
-        decomposition is used for the global variance, so we end up
-        with:
-
-        V/V0 = [nV* + (x-m*)^2] / [nV0* + (x-m0*)^2]
-        """
-        fixed = range(self.nscans)
-        fixed.remove(t)
-        aux = self.data[:, fixed]
-        if self.optimize_template:
-            self.mu = np.mean(aux, 1)
-        self.offset = self.nscans * np.mean((aux.T - self.mu) ** 2)
-        self.mu0 = np.mean(aux)
-        self.offset0 = self.nscans * np.mean((aux - self.mu0) ** 2)
-        self._t = t
-        self._pc = None
-
     def set_transform(self, t, pc):
         self.transforms[t].param = pc
         self.resample(t)
@@ -322,7 +297,7 @@ class RealignSliceAlgorithm(object):
         average temporal variance in the sequence and the global
         spatio-temporal variance.
         """
-        return np.log(self._V / self._V0)
+        return (self.gm_values-self.wm_values).mean()
 
     def _energy_gradient(self):
         return self._dV / self._V - self._dV0 / self._V0
@@ -352,7 +327,7 @@ class RealignSliceAlgorithm(object):
             self._init_energy(pc)
             return self._energy_hessian()
 
-        self.init_instant_motion(t)
+        self._pc = None
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
                                 fprime=fprime,
