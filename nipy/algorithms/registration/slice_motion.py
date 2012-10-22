@@ -20,9 +20,9 @@ from scipy.ndimage import convolve1d, gaussian_filter
 
 def extract_boundaries(wmseg,bbr_dist,fmap=None):
     
-    wmdata = wmseg.get_data()
-    wmsum = (wmdata>0.5).astype(np.int16)
-    gradient = np.empty(wmdata.shape+(3,))
+    wmdata = wmseg.get_data().astype(np.float32)
+    wmsum = (wmdata>0.5).astype(np.int8)
+    gradient = np.empty(wmdata.shape+(3,),dtype=np.float32)
     for axis in xrange(wmdata.ndim): #convolve separable
         convolve1d(wmsum,np.ones(3),axis,wmsum)
         order = [0]*wmdata.ndim
@@ -30,7 +30,7 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
     boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
     n_bnd_pts = np.count_nonzero(boundaries)
-    coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts),))
+    coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts,np.float32),))
     coords_mm = wmseg.get_affine().dot(coords).T
     voxsize = np.sqrt((wmseg.get_affine()[:3,:3]**2).sum(0))
     gradient_mm = gradient/voxsize
@@ -63,7 +63,7 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
 VERBOSE = True  # enables online print statements
 SLICE_ORDER = 'ascending'
 INTERLEAVED = None
-OPTIMIZER = 'ncg'
+OPTIMIZER = 'powell'
 XTOL = 1e-5
 FTOL = 1e-5
 GTOL = 1e-5
@@ -93,6 +93,7 @@ class RealignSliceAlgorithm(object):
                  wmseg,
                  fmap=None,
                  pe_dir=1,
+                 echo_spacing=0.005,
                  bbr_dist=0.5,
                  affine_class=Rigid,
                  slice_groups=None,
@@ -110,9 +111,15 @@ class RealignSliceAlgorithm(object):
                  maxfun=MAXFUN,
                  refscan=REFSCAN):
 
+        self.im4d = im4d
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
-        self.wmcoords,self.gmcoords,self.wm_fmap_values,gm_fmap_values = extract_boundaries(wmseg,bbr_dist,fmap)
+        self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,fmap)
+        self.border_nvox=self.wmcoords.shape[0]
+
+        self.pe_dir = pe_dir
+        self.fmap_scale = echo_spacing * self.dims[pe_dir]/(2.0*np.pi)
+
 
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
@@ -158,8 +165,8 @@ class RealignSliceAlgorithm(object):
                       maxiter=maxiter,
                       maxfun=maxfun)
 
-        self.wm_values = np.empty(self.wmcoords.shape[0])
-        self.gm_values = np.empty(self.gmcoords.shape[0])
+        self.wm_values = None
+        self.gm_values = None
 
         # Auxiliary array for realignment estimation
 #        self._res = np.zeros(masksize, dtype='double')
@@ -180,33 +187,49 @@ class RealignSliceAlgorithm(object):
         print 'resampling....'
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
         ref2fmri = np.dot(inv_trans,self.inv_affine)
-        slg_gm_vox = np.dot(ref2fmri,self.gmcoords)
-        slg_wm_vox = np.dot(ref2fmri,self.wmcoords)
+        slg_gm_vox = np.dot(
+            np.concatenate((self.gmcoords,np.ones((self.border_nvox,1))),1),
+            ref2fmri.T)
+        slg_wm_vox = np.dot(
+            np.concatenate((self.wmcoords,np.ones((self.border_nvox,1))),1),
+            ref2fmri.T)
+
         #add shift in phase encoding direction
         if self.gm_fmap_values != None:
-            slg_gm_vox[:,slice_axis] += self.gm_fmap_values*self.fmap_scale
-            slg_wm_vox[:,slice_axis] += self.wm_fmap_values*self.fmap_scale
+            slg_gm_vox[:,self.pe_dir] += self.gm_fmap_values*self.fmap_scale
+            slg_wm_vox[:,self.pe_dir] += self.wm_fmap_values*self.fmap_scale
             
         sg = self.slice_groups[sg]
         tst = self.timestamps
-        sa = self.slice_axis
-        t_gm = np.concatenate(
-            [self.scanner_time(
-                    slg_gm_vox[slg_gm_vox[:,sa]>sg[0][1],sa],tst[sg[0][0]])]+
-            [self.scanner_time(
-                    slg_gm_vox[:,self.slice_axis],
-                    tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
-            [self.scanner_time(
-                    slg_gm_vox[slg_gm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])])
-        t_wm = np.concatenate(
-            [self.scanner_time(
-                    slg_wm_vox[slg_wm_vox[:,sa]>sg[0][1],sa],tst[sg[0][0]])]+
-            [self.scanner_time(
-                    slg_wm_vox[:,self.slice_axis],
-                    tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
-            [self.scanner_time(
-                    slg_wm_vox[slg_wm_vox[:,sa]<=sg[1][1],sa],tst[sg[1][0]])])
+        sa = self.im4d.slice_axis
+        first_vol_subset = np.logical_and(slg_gm_vox[:,sa]>sg[0][1],
+                                          slg_wm_vox[:,sa]>sg[0][1])
+        last_vol_subset = np.logical_and(slg_gm_vox[:,sa]<sg[1][1],
+                                         slg_wm_vox[:,sa]<sg[1][1])
         
+        t_gm = np.concatenate(
+            [self.scanner_time(slg_gm_vox[first_vol_subset,sa],tst[sg[0][0]])]+
+            [self.scanner_time(slg_gm_vox[:,sa], tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
+            [self.scanner_time(slg_gm_vox[last_vol_subset,sa],tst[sg[1][0]])])
+
+        t_wm = np.concatenate(
+            [self.scanner_time(slg_wm_vox[first_vol_subset,sa],tst[sg[0][0]])]+
+            [self.scanner_time(slg_wm_vox[:,sa],tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
+            [self.scanner_time(slg_wm_vox[last_vol_subset,sa],tst[sg[1][0]])])
+        
+        slg_gm_vox = np.concatenate((
+                slg_gm_vox[first_vol_subset],
+                slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
+                slg_gm_vox[last_vol_subset]))
+
+        slg_wm_vox = np.concatenate((
+                slg_wm_vox[first_vol_subset],
+                slg_wm_vox.repeat(sg[1][0]-sg[0][0],0),
+                slg_wm_vox[last_vol_subset]))
+
+        self.gm_values = np.empty(t_gm.shape[0])
+        self.wm_values = np.empty(t_wm.shape[0])
+
         _cspline_sample4d(
             self.gm_values,self.cbspline,
             slg_gm_vox[:,0], slg_gm_vox[:,1], slg_gm_vox[:,2],t_gm,
@@ -297,7 +320,9 @@ class RealignSliceAlgorithm(object):
         average temporal variance in the sequence and the global
         spatio-temporal variance.
         """
-        return (self.gm_values-self.wm_values).mean()
+        mean_grads=(self.gm_values-self.wm_values).mean()
+        print 'mean gradient %f'%mean_grads
+        return mean_grads
 
     def _energy_gradient(self):
         return self._dV / self._V - self._dV0 / self._V0
@@ -328,6 +353,7 @@ class RealignSliceAlgorithm(object):
             return self._energy_hessian()
 
         self._pc = None
+        self._t = t
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
                                 fprime=fprime,
@@ -342,11 +368,11 @@ class RealignSliceAlgorithm(object):
         # strong image subsampling, i.e. at the coarser levels of the
         # multiscale pyramid. To avoid crashes, we insert a try/catch
         # instruction.
-        try:
-            pc = fmin(f, self.transforms[t].param, *args, **kwargs)
-            self.set_transform(t, pc)
-        except:
-            warnings.warn('Minimization failed')
+#        try:
+        pc = fmin(f, self.transforms[t].param, *args, **kwargs)
+        self.set_transform(t, pc)
+        #except:
+        #warnings.warn('Minimization failed')
 
     def estimate_motion(self):
         """
