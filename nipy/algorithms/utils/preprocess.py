@@ -37,16 +37,19 @@ def regress_out_motion_parameters(nii,motion_in,mask,
         gs_tc /= gs_tc.var() #reduce
         
     if regressors_type == 'global':
+        regressors = np.array((data.shape[-1],0))
 
-        if regressors_transform == 'bw_derivatives':
-            regressors = np.concatenate((
+        if 'original' in regressors_transform:
+            regressors = np.concatenate(
+                motion_in,regressors)
+        if 'bw_derivatives' in regressors_transform:
+            regressors = np.concatenate((np.concatenate((
                 np.ones((1,6)),
-                np.diff(motion_in,axis=0)))
-        elif regressors_transform == 'fw_derivatives':
-            regressors = np.concatenate((
-                np.diff(motion_in,axis=0),
-                np.ones((1,6))))
-        else:
+                np.diff(motion_in,axis=0))),regressors))
+        if 'fw_derivatives' in regressors_transform:
+            regressors = np.concatenate((np.concatenate((
+                np.diff(motion_in,axis=0),np.ones((1,6)))),regressors))
+        if regressors.shape[1] == 0:
             regressors = motion_in
 
         if global_signal:
@@ -73,23 +76,29 @@ def regress_out_motion_parameters(nii,motion_in,mask,
 #        voxels_motion = voxels_motion.transpose((2,0,1))
         
         if regressors_type == 'voxelwise_translation':
-            regressors = voxels_motion[...,:3]
+            voxelwise = voxels_motion[...,:3]
         elif regressors_type == 'voxelwise_drms':
-            regressors = np.sqrt(np.square(voxels_motion[...,:3]).sum(axis=2))
+            voxelwise = np.sqrt(np.square(voxels_motion[...,:3]).sum(axis=2))
         elif regressors_type == 'voxelwise_outplane':
-            regressors = np.dot(np.linalg.inv(nii.get_affine()),
+            voxelwise = np.dot(np.linalg.inv(nii.get_affine()),
                                 voxels_motion.transpose((0,2,1)))[slicing_axis]
-        if regressors.ndim < 3:
-            regressors = regressors[:,:,np.newaxis]
-        regsh = regressors.shape
-        if regressors_transform == 'bw_derivatives':
-            regressors = np.concatenate(
-                (np.zeros((regsh[0],1,regsh[2])),
-                 np.diff(regressors, axis=1)), axis=1)
-        elif regressors_transform == 'fw_derivatives':
-            regressors = np.concatenate(
-                (np.diff(regressors, axis=1),
-                 np.zeros((regsh[0],1,regsh[2]))), axis=1)
+        if voxelwise.ndim < 3:
+            voxelwise = regressors[:,:,np.newaxis]
+        regsh = voxelwise.shape
+
+        regressors = np.empty(voxelwise.shape[:2]+(0,))
+        if 'original' in regressors_transform:
+            regressors = voxelwise
+        if 'bw_derivatives' in regressors_transform:
+            regressors = np.concatenate((np.concatenate(
+                 (np.zeros((regsh[0],1,regsh[2])),
+                  np.diff(voxelwise, axis=1)), axis=1),regressors),-1)
+        if 'fw_derivatives' in regressors_transform:
+            regressors = np.concatenate((np.concatenate((
+                 np.diff(voxelwise, axis=1),
+                 np.zeros((regsh[0],1,regsh[2]))), axis=1),regressors),-1)
+        if regressors.shape[-1] == 0:
+            regressors = voxelwise
 
         betas=np.empty((data.shape[0],regressors.shape[2]+int(global_signal)))
 
