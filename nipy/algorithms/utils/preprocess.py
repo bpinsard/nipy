@@ -38,6 +38,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
         
     if regressors_type == 'global':
         regressors = np.array((data.shape[-1],0))
+        regressors = (regressors-regressors.mean(0)[np.newaxis])/regressors.std(0)[np.newaxis]
 
         if 'original' in regressors_transform:
             regressors = np.concatenate(
@@ -85,6 +86,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
         if voxelwise.ndim < 3:
             voxelwise = regressors[:,:,np.newaxis]
         regsh = voxelwise.shape
+        voxelwise = (voxelwise-voxelwise.mean(1)[:,np.newaxis])/voxelwise.std(1)[:,np.newaxis]
 
         regressors = np.empty(voxelwise.shape[:2]+(0,))
         if 'original' in regressors_transform:
