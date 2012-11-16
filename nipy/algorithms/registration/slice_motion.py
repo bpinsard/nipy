@@ -18,7 +18,7 @@ from ._registration import (_cspline_transform,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter
 
-def extract_boundaries(wmseg,bbr_dist,fmap=None):
+def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None):
     
     wmdata = wmseg.get_data().astype(np.float32)
     wmsum = (wmdata>0.5).astype(np.int8)
@@ -29,15 +29,20 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
         order[axis] = 1
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
     boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
+    if subsample > 1:
+        boundaries[::subsample] = 0
+        boundaries[:,::subsample] = 0
+        boundaries[:,:,::subsample] = 0
     n_bnd_pts = np.count_nonzero(boundaries)
-    coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts,np.float32),))
+    coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts,np.double),),
+                      dtype=np.double)
     coords_mm = wmseg.get_affine().dot(coords).T
     voxsize = np.sqrt((wmseg.get_affine()[:3,:3]**2).sum(0))
-    gradient_mm = gradient/voxsize
-    gradient_mm /= np.sqrt((gradient**2).sum(-1))[...,np.newaxis]
+    gradient_mm = wmseg.get_affine()[:3,:3].dot(gradient[boundaries].T).T
+    gradient_mm /= np.sqrt((gradient_mm**2).sum(-1))[:,np.newaxis]
     
-    wmcoords = coords_mm[:,:3]-gradient_mm[boundaries]*bbr_dist
-    gmcoords = coords_mm[:,:3]+gradient_mm[boundaries]*bbr_dist
+    wmcoords = coords_mm[:,:3]+gradient_mm*bbr_dist #climb gradient
+    gmcoords = coords_mm[:,:3]-gradient_mm*bbr_dist #go downhill
     wm_fmap_values = gm_fmap_values = None
     if fmap != None:
         fmap_spline = _cspline_transform(fmap.get_data())
@@ -56,7 +61,7 @@ def extract_boundaries(wmseg,bbr_dist,fmap=None):
             gm_fmap_values,fmap_spline,
             fmap_gmvox[0,:],fmap_gmvox[1,:],fmap_gmvox[2,:],
             mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
-    return wmcoords,gmcoords,wm_fmap_values,gm_fmap_values
+    return coords_mm,wmcoords,gmcoords,wm_fmap_values,gm_fmap_values
 
 
 # Module globals
@@ -98,7 +103,6 @@ class RealignSliceAlgorithm(object):
                  affine_class=Rigid,
                  slice_groups=None,
                  transforms=None,
-                 time_interp=True,
                  subsampling=(1, 1, 1),
                  borders=BORDERS,
                  optimizer=OPTIMIZER,
@@ -114,12 +118,17 @@ class RealignSliceAlgorithm(object):
         self.im4d = im4d
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
-        self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,fmap)
+        self.bnd_coords,self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,2,fmap)        
         self.border_nvox=self.wmcoords.shape[0]
+        self.gmcoords = np.concatenate((self.gmcoords,np.ones((self.border_nvox,1))),1)
+        self.wmcoords = np.concatenate((self.wmcoords,np.ones((self.border_nvox,1))),1)
+
+        self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
+        self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
 
         self.pe_dir = pe_dir
         self.fmap_scale = echo_spacing * self.dims[pe_dir]/(2.0*np.pi)
-
+        self.affine_class = affine_class
 
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
@@ -132,7 +141,7 @@ class RealignSliceAlgorithm(object):
             self.slice_groups=slice_groups
             self.parts=len(slice_groups)
         if transforms == None:
-            self.transforms = [affine_class() for sg in self.slice_groups]
+            self.transforms = []
         else:
             self.transforms = transforms
 
@@ -140,14 +149,7 @@ class RealignSliceAlgorithm(object):
         self.timestamps = im4d.tr * np.arange(self.nscans)
 
         # Compute the 4d cubic spline transform
-        self.time_interp = time_interp
-        if time_interp:
-            self.cbspline = _cspline_transform(im4d.get_data())
-        else:
-            self.cbspline = np.zeros(self.dims, dtype='double')
-            for t in range(self.dims[3]):
-                self.cbspline[:, :, :, t] =\
-                    _cspline_transform(im4d.get_data()[:, :, :, t])
+        self.cbspline = _cspline_transform(im4d.get_data())
 
         # The reference scan conventionally defines the head
         # coordinate system
@@ -165,8 +167,7 @@ class RealignSliceAlgorithm(object):
                       maxiter=maxiter,
                       maxfun=maxfun)
 
-        self.wm_values = None
-        self.gm_values = None
+        self.data = np.array([[]])
 
         # Auxiliary array for realignment estimation
 #        self._res = np.zeros(masksize, dtype='double')
@@ -184,62 +185,66 @@ class RealignSliceAlgorithm(object):
         x,y,z,t are "head" grid coordinates
         X,Y,Z,T are "scanner" grid coordinates
         """
-        print 'resampling....'
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
         ref2fmri = np.dot(inv_trans,self.inv_affine)
-        slg_gm_vox = np.dot(
-            np.concatenate((self.gmcoords,np.ones((self.border_nvox,1))),1),
-            ref2fmri.T)
-        slg_wm_vox = np.dot(
-            np.concatenate((self.wmcoords,np.ones((self.border_nvox,1))),1),
-            ref2fmri.T)
+        self.slg_gm_vox[:] = np.dot(self.gmcoords,ref2fmri.T)
+        self.slg_wm_vox[:] = np.dot(self.wmcoords,ref2fmri.T)
 
         #add shift in phase encoding direction
         if self.gm_fmap_values != None:
-            slg_gm_vox[:,self.pe_dir] += self.gm_fmap_values*self.fmap_scale
-            slg_wm_vox[:,self.pe_dir] += self.wm_fmap_values*self.fmap_scale
+            self.slg_gm_vox[:,self.pe_dir]+=self.gm_fmap_values*self.fmap_scale
+            self.slg_wm_vox[:,self.pe_dir]+=self.wm_fmap_values*self.fmap_scale
             
         sg = self.slice_groups[sg]
         tst = self.timestamps
         sa = self.im4d.slice_axis
-        first_vol_subset = np.logical_and(slg_gm_vox[:,sa]>sg[0][1],
-                                          slg_wm_vox[:,sa]>sg[0][1])
-        last_vol_subset = np.logical_and(slg_gm_vox[:,sa]<sg[1][1],
-                                         slg_wm_vox[:,sa]<sg[1][1])
+        first_vol_subset = np.logical_and(self.slg_gm_vox[:,sa]>sg[0][1],
+                                          self.slg_wm_vox[:,sa]>sg[0][1])
+        if sg[0][0]<sg[1][0]:
+            last_vol_subset = np.logical_and(self.slg_gm_vox[:,sa]<sg[1][1],
+                                             self.slg_wm_vox[:,sa]<sg[1][1])
+        else:
+            last_vol_subset = np.array([],dtype=np.bool)
         
         t_gm = np.concatenate(
-            [self.scanner_time(slg_gm_vox[first_vol_subset,sa],tst[sg[0][0]])]+
-            [self.scanner_time(slg_gm_vox[:,sa], tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(slg_gm_vox[last_vol_subset,sa],tst[sg[1][0]])])
+            [self.scanner_time(self.slg_gm_vox[first_vol_subset,sa],
+                               tst[sg[0][0]])]+
+            [self.scanner_time(self.slg_gm_vox[:,sa],
+                               tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
+            [self.scanner_time(self.slg_gm_vox[last_vol_subset,sa],
+                               tst[sg[1][0]])])
 
         t_wm = np.concatenate(
-            [self.scanner_time(slg_wm_vox[first_vol_subset,sa],tst[sg[0][0]])]+
-            [self.scanner_time(slg_wm_vox[:,sa],tst[t]) for t in xrange(sg[0][1]+1,sg[1][1])]+
-            [self.scanner_time(slg_wm_vox[last_vol_subset,sa],tst[sg[1][0]])])
+            [self.scanner_time(self.slg_wm_vox[first_vol_subset,sa],
+                               tst[sg[0][0]])]+
+            [self.scanner_time(self.slg_wm_vox[:,sa],
+                               tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
+            [self.scanner_time(self.slg_wm_vox[last_vol_subset,sa],
+                               tst[sg[1][0]])])
         
-        slg_gm_vox = np.concatenate((
-                slg_gm_vox[first_vol_subset],
-                slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
-                slg_gm_vox[last_vol_subset]))
+        tmp_slg_gm_vox = np.concatenate((
+                self.slg_gm_vox[first_vol_subset],
+                self.slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
+                self.slg_gm_vox[last_vol_subset]))
 
-        slg_wm_vox = np.concatenate((
-                slg_wm_vox[first_vol_subset],
-                slg_wm_vox.repeat(sg[1][0]-sg[0][0],0),
-                slg_wm_vox[last_vol_subset]))
+        tmp_slg_wm_vox = np.concatenate((
+                self.slg_wm_vox[first_vol_subset],
+                self.slg_wm_vox.repeat(sg[1][0]-sg[0][0],0),
+                self.slg_wm_vox[last_vol_subset]))
 
-        self.gm_values = np.empty(t_gm.shape[0])
-        self.wm_values = np.empty(t_wm.shape[0])
+        if self.data.shape[1] != t_gm.shape[0]:
+            self.data = np.empty((2,t_gm.shape[0]))
 
         _cspline_sample4d(
-            self.gm_values,self.cbspline,
-            slg_gm_vox[:,0], slg_gm_vox[:,1], slg_gm_vox[:,2],t_gm,
+            self.data[0],self.cbspline,
+            tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],t_gm,
             mx=EXTRAPOLATE_SPACE,
             my=EXTRAPOLATE_SPACE,
             mz=EXTRAPOLATE_SPACE,
             mt=EXTRAPOLATE_TIME)
         _cspline_sample4d(
-            self.wm_values,self.cbspline,
-            slg_wm_vox[:,0], slg_wm_vox[:,1], slg_wm_vox[:,2],t_wm,
+            self.data[1],self.cbspline,
+            tmp_slg_wm_vox[:,0], tmp_slg_wm_vox[:,1], tmp_slg_wm_vox[:,2],t_wm,
             mx=EXTRAPOLATE_SPACE,
             my=EXTRAPOLATE_SPACE,
             mz=EXTRAPOLATE_SPACE,
@@ -256,16 +261,11 @@ class RealignSliceAlgorithm(object):
                 print('Fully resampling scan %d/%d' % (t + 1, self.nscans))
             X, Y, Z = scanner_coords(xyz, self.transforms[t].as_affine(),
                                      self.inv_affine, self.affine)
-            if self.time_interp:
-                T = self.scanner_time(Z, self.timestamps[t])
-                _cspline_sample4d(res[:, :, :, t],
-                                  self.cbspline,
-                                  X, Y, Z, T,
-                                  mt='nearest')
-            else:
-                _cspline_sample3d(res[:, :, :, t],
-                                  self.cbspline[:, :, :, t],
-                                  X, Y, Z)
+            T = self.scanner_time(Z, self.timestamps[t])
+            _cspline_sample4d(res[:, :, :, t],
+                              self.cbspline,
+                              X, Y, Z, T,
+                              mt='nearest')
         return res
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
@@ -281,9 +281,11 @@ class RealignSliceAlgorithm(object):
         self.optimizer_kwargs.setdefault('maxiter', MAXITER)
         self.optimizer_kwargs.setdefault('maxfun', MAXFUN)
         self.use_derivatives = use_derivatives(self.optimizer)
+        
 
     def set_transform(self, t, pc):
         self.transforms[t].param = pc
+#        print pc
         self.resample(t)
 
     def _init_energy(self, pc):
@@ -291,46 +293,34 @@ class RealignSliceAlgorithm(object):
             return
         self.set_transform(self._t, pc)
         self._pc = pc
-        self._res[:] = self.data[:, self._t] - self.mu[:]
-        self._V = np.maximum(self.offset + np.mean(self._res ** 2), SMALL)
-        self._res0[:] = self.data[:, self._t] - self.mu0
-        self._V0 = np.maximum(self.offset0 + np.mean(self._res0 ** 2), SMALL)
 
         if self.use_derivatives:
             # linearize the data wrt the transform parameters
             # use the auxiliary array to save the current resampled data
-            self._aux[:] = self.data[:, self._t]
+            self._aux = self.data
+            nrgy = np.diff(self.data,1,0).mean()/self.stepsize
             basis = np.eye(6)
+            self._dV=np.zeros(6)
             for j in range(pc.size):
                 self.set_transform(self._t, pc + self.stepsize * basis[j])
-                self.A[:, j] = (self.data[:, self._t] - self._aux)\
-                    / self.stepsize
+                self._dV[j] = np.diff(self.data,1,0).mean()/self.stepsize-nrgy
             self.transforms[self._t].param = pc
-            self.data[:, self._t] = self._aux[:]
+            self.data = self._aux
             # pre-compute gradient and hessian of numerator and
             # denominator
-            c = 2 / float(self.data.shape[0])
-            self._dV = c * np.dot(self.A.T, self._res)
-            self._dV0 = c * np.dot(self.A.T, self._res0)
-            self._H = c * np.dot(self.A.T, self.A)
+            self._dV *= 2.0
+            self._H = self._dV[:,np.newaxis].dot(self._dV[np.newaxis])/self._dV.size
 
     def _energy(self):
-        """
-        The alignment energy is defined as the log-ratio between the
-        average temporal variance in the sequence and the global
-        spatio-temporal variance.
-        """
-        mean_grads=(self.gm_values-self.wm_values).mean()
+        mean_grads = np.diff(self.data,1,0).mean()
         print 'mean gradient %f'%mean_grads
         return mean_grads
 
     def _energy_gradient(self):
-        return self._dV / self._V - self._dV0 / self._V0
+        return self._dV
 
     def _energy_hessian(self):
-        return (1 / self._V - 1 / self._V0) * self._H\
-            - np.dot(self._dV, self._dV.T) / np.maximum(self._V ** 2, SMALL)\
-            + np.dot(self._dV0, self._dV0.T) / np.maximum(self._V0 ** 2, SMALL)
+        return self._H
 
     def estimate_instant_motion(self, t):
         """
@@ -339,6 +329,11 @@ class RealignSliceAlgorithm(object):
         if VERBOSE:
             print('Estimating motion at time frame %d/%d...'
                   % (t + 1, self.nscans))
+        if len(self.transforms) <= t:
+            if t > 0:
+                self.transforms.append(self.transforms[t-1].copy())
+            else:
+                self.transforms.append(self.affine_class())
 
         def f(pc):
             self._init_energy(pc)
@@ -357,7 +352,7 @@ class RealignSliceAlgorithm(object):
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
                                 fprime=fprime,
-                                fhess=fhess,
+#                                fhess=fhess,
                                 **self.optimizer_kwargs)
 
         # With scipy >= 0.9, some scipy minimization functions like
@@ -383,6 +378,7 @@ class RealignSliceAlgorithm(object):
         """
         
         for t in range(self.parts):
+            print 'slice group %d' % t
             self.estimate_instant_motion(t)
             if VERBOSE:
                 print(self.transforms[t])
