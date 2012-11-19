@@ -30,9 +30,10 @@ def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None):
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
     boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
     if subsample > 1:
-        boundaries[::subsample] = 0
-        boundaries[:,::subsample] = 0
-        boundaries[:,:,::subsample] = 0
+        #subsample only in slice plane not in slicing axis
+        aux = np.zeros(boundaries.shape,boundaries.dtype)
+        aux[::subsample,::subsample] = boundaries[::subsample,::subsample]
+        boundaries[:] = aux
     n_bnd_pts = np.count_nonzero(boundaries)
     coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts,np.double),),
                       dtype=np.double)
@@ -113,12 +114,14 @@ class RealignSliceAlgorithm(object):
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
-                 refscan=REFSCAN):
+                 refscan=REFSCAN,
+                 slice_thickness=3.0):
 
         self.im4d = im4d
+        self.slice_thickness=slice_thickness
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
-        self.bnd_coords,self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,2,fmap)        
+        self.bnd_coords,self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,4,fmap)
         self.border_nvox=self.wmcoords.shape[0]
         self.gmcoords = np.concatenate((self.gmcoords,np.ones((self.border_nvox,1))),1)
         self.wmcoords = np.concatenate((self.wmcoords,np.ones((self.border_nvox,1))),1)
@@ -186,8 +189,8 @@ class RealignSliceAlgorithm(object):
         X,Y,Z,T are "scanner" grid coordinates
         """
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
-        ref2fmri = np.dot(inv_trans,self.inv_affine)
-        self.slg_gm_vox[:] = np.dot(self.gmcoords,ref2fmri.T)
+        ref2fmri = np.dot(self.inv_affine,inv_trans)
+        self.slg_gm_vox[:] = np.dot(self.gmcoords,ref2fmri.T) #(ABt)t = (B,At)
         self.slg_wm_vox[:] = np.dot(self.wmcoords,ref2fmri.T)
 
         #add shift in phase encoding direction
@@ -198,13 +201,22 @@ class RealignSliceAlgorithm(object):
         sg = self.slice_groups[sg]
         tst = self.timestamps
         sa = self.im4d.slice_axis
-        first_vol_subset = np.logical_and(self.slg_gm_vox[:,sa]>sg[0][1],
-                                          self.slg_wm_vox[:,sa]>sg[0][1])
-        if sg[0][0]<sg[1][0]:
-            last_vol_subset = np.logical_and(self.slg_gm_vox[:,sa]<sg[1][1],
-                                             self.slg_wm_vox[:,sa]<sg[1][1])
-        else:
+        first_vol_subset = np.logical_and(
+            self.slg_gm_vox[:,sa]>sg[0][1]-self.slice_thickness,
+            self.slg_wm_vox[:,sa]>sg[0][1]-self.slice_thickness)
+
+        last_vol_subset = np.logical_and(
+            self.slg_gm_vox[:,sa]<sg[1][1]+self.slice_thickness,
+            self.slg_wm_vox[:,sa]<sg[1][1]+self.slice_thickness)
+        if sg[0][0] == sg[1][0]:
+            first_vol_subset = np.logical_and(first_vol_subset,last_vol_subset)
             last_vol_subset = np.array([],dtype=np.bool)
+
+        self.skip_sg=False
+        if np.count_nonzero(first_vol_subset) == 0:
+            print 'skipping slice group, no boundaries contained'
+            self.skip_sg=True
+            return
         
         t_gm = np.concatenate(
             [self.scanner_time(self.slg_gm_vox[first_vol_subset,sa],
@@ -308,8 +320,8 @@ class RealignSliceAlgorithm(object):
             self.data = self._aux
             # pre-compute gradient and hessian of numerator and
             # denominator
+            self._H = 2.0 * self._dV[:,np.newaxis].dot(self._dV[np.newaxis])
             self._dV *= 2.0
-            self._H = self._dV[:,np.newaxis].dot(self._dV[np.newaxis])/self._dV.size
 
     def _energy(self):
         mean_grads = np.diff(self.data,1,0).mean()
@@ -320,7 +332,7 @@ class RealignSliceAlgorithm(object):
         return self._dV
 
     def _energy_hessian(self):
-        return self._H
+        return 
 
     def estimate_instant_motion(self, t):
         """
@@ -334,6 +346,11 @@ class RealignSliceAlgorithm(object):
                 self.transforms.append(self.transforms[t-1].copy())
             else:
                 self.transforms.append(self.affine_class())
+        
+        self.set_transform(t,self.transforms[t].param)
+        if self.skip_sg:
+            return
+        
 
         def f(pc):
             self._init_energy(pc)
