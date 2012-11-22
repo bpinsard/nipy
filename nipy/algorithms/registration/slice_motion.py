@@ -121,10 +121,14 @@ class RealignSliceAlgorithm(object):
         self.slice_thickness=slice_thickness
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
-        self.bnd_coords,self.wmcoords,self.gmcoords,self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(wmseg,bbr_dist,4,fmap)
+        self.bnd_coords,self.wmcoords,self.gmcoords, \
+            self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(
+            wmseg,bbr_dist,4,fmap)
         self.border_nvox=self.wmcoords.shape[0]
-        self.gmcoords = np.concatenate((self.gmcoords,np.ones((self.border_nvox,1))),1)
-        self.wmcoords = np.concatenate((self.wmcoords,np.ones((self.border_nvox,1))),1)
+        self.gmcoords = np.concatenate((self.gmcoords,
+                                        np.ones((self.border_nvox,1))),1)
+        self.wmcoords = np.concatenate((self.wmcoords,
+                                        np.ones((self.border_nvox,1))),1)
 
         self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
         self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
@@ -197,7 +201,7 @@ class RealignSliceAlgorithm(object):
         if self.gm_fmap_values != None:
             self.slg_gm_vox[:,self.pe_dir]+=self.gm_fmap_values*self.fmap_scale
             self.slg_wm_vox[:,self.pe_dir]+=self.wm_fmap_values*self.fmap_scale
-            
+        
         sg = self.slice_groups[sg]
         tst = self.timestamps
         sa = self.im4d.slice_axis
@@ -324,9 +328,12 @@ class RealignSliceAlgorithm(object):
             self._dV *= 2.0
 
     def _energy(self):
-        mean_grads = np.diff(self.data,1,0).mean()
-        print 'mean gradient %f'%mean_grads
-        return mean_grads
+        percent_contrast = 200*np.diff(self.data,1,0)/self.data.sum(0)
+        percent_contrast[np.abs(percent_contrast)<1e-6] = 0
+        bbr_offset=0 # TODO add as an option, and add weighting
+        cost = (1.0+np.tanh(percent_contrast-bbr_offset)).mean()
+        print 'mean gradient %f'%cost
+        return cost
 
     def _energy_gradient(self):
         return self._dV
