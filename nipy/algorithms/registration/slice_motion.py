@@ -18,7 +18,7 @@ from ._registration import (_cspline_transform,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter
 
-def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None):
+def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None, exclude=None):
     
     wmdata = wmseg.get_data().astype(np.float32)
     wmsum = (wmdata>0.5).astype(np.int8)
@@ -29,6 +29,9 @@ def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None):
         order[axis] = 1
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
     boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
+    # allow to remove some boundaries points as trunk for pulsatility
+    if exclude != None: 
+        boundaries[exclude] = False
     if subsample > 1:
         #subsample only in slice plane not in slicing axis
         aux = np.zeros(boundaries.shape,boundaries.dtype)
@@ -82,15 +85,6 @@ REFSCAN = 0
 EXTRAPOLATE_SPACE = 'reflect'
 EXTRAPOLATE_TIME = 'reflect'
 
-LOOPS = 5  # loops within each run
-BETWEEN_LOOPS = 5  # loops used to realign different runs
-SPEEDUP = 5  # image sub-sampling factor for speeding up
-"""
-# How to tune those parameters for a multi-resolution implementation
-LOOPS = 5, 1
-BETWEEN_LOOPS = 5, 1
-SPEEDUP = 5, 2
-"""
 
 class RealignSliceAlgorithm(object):
 
@@ -123,7 +117,7 @@ class RealignSliceAlgorithm(object):
         self.nscans = self.dims[3]
         self.bnd_coords,self.wmcoords,self.gmcoords, \
             self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(
-            wmseg,bbr_dist,4,fmap)
+            wmseg,bbr_dist,1,fmap)
         self.border_nvox=self.wmcoords.shape[0]
         self.gmcoords = np.concatenate((self.gmcoords,
                                         np.ones((self.border_nvox,1))),1)
@@ -206,15 +200,31 @@ class RealignSliceAlgorithm(object):
         tst = self.timestamps
         sa = self.im4d.slice_axis
         first_vol_subset = np.logical_and(
-            self.slg_gm_vox[:,sa]>sg[0][1]-self.slice_thickness,
-            self.slg_wm_vox[:,sa]>sg[0][1]-self.slice_thickness)
+            self.slg_gm_vox[:,sa]>sg[0][1]-0.5,
+            self.slg_wm_vox[:,sa]>sg[0][1]-0.5)
 
         last_vol_subset = np.logical_and(
-            self.slg_gm_vox[:,sa]<sg[1][1]+self.slice_thickness,
-            self.slg_wm_vox[:,sa]<sg[1][1]+self.slice_thickness)
-        if sg[0][0] == sg[1][0]:
+            self.slg_gm_vox[:,sa]<sg[1][1]+0.5,
+            self.slg_wm_vox[:,sa]<sg[1][1]+0.5)
+         if sg[0][0] == sg[1][0]:
             first_vol_subset = np.logical_and(first_vol_subset,last_vol_subset)
             last_vol_subset = np.array([],dtype=np.bool)
+
+        # adapt subsampling to keep regular amount of points in each slice
+        if sf[0][0] < sg[1][0]-1:
+            samples_slice_hist = np.histogram(
+                self.slg_gm_vox[:,sa],
+                np.arange(self.dims[sa]+1)-0.5)
+        else:
+            samples_slice_hist += np.histogram(
+                self.slg_gm_vox[first_vol_subset,sa],
+                np.arange(self.dims[sa]+1)-0.5)
+            if sg[0][0] < sg[1][0]:
+                samples_slice_hist += np.histogram(
+                    self.slg_gm_vox[last_vol_subset,sa],
+                    np.arange(self.dims[sa]+1)-0.5)
+        
+        
 
         self.skip_sg=False
         if np.count_nonzero(first_vol_subset) == 0:
@@ -301,7 +311,6 @@ class RealignSliceAlgorithm(object):
 
     def set_transform(self, t, pc):
         self.transforms[t].param = pc
-#        print pc
         self.resample(t)
 
     def _init_energy(self, pc):
@@ -406,19 +415,3 @@ class RealignSliceAlgorithm(object):
             self.estimate_instant_motion(t)
             if VERBOSE:
                 print(self.transforms[t])
-
-    def align_to_refscan(self):
-        """
-        The `motion_estimate` method aligns scans with an online
-        template so that spatial transforms map some average head
-        space to the scanner space. To conventionally redefine the
-        head space as being aligned with some reference scan, we need
-        to right compose each head_average-to-scanner transform with
-        the refscan's 'to head_average' transform.
-        """
-        if self.refscan == None:
-            return
-        Tref_inv = self.transforms[self.refscan].inv()
-        for t in range(self.nscans):
-            self.transforms[t] = (self.transforms[t]).compose(Tref_inv)
-
