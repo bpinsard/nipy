@@ -94,7 +94,7 @@ class RealignSliceAlgorithm(object):
                  fmap=None,
                  pe_dir=1,
                  echo_spacing=0.005,
-                 bbr_dist=0.5,
+                 bbr_dist=2.0,
                  affine_class=Rigid,
                  slice_groups=None,
                  transforms=None,
@@ -109,6 +109,7 @@ class RealignSliceAlgorithm(object):
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
                  refscan=REFSCAN,
+                 nsamples_per_slicegroup=2000,
                  slice_thickness=3.0):
 
         self.im4d = im4d
@@ -127,6 +128,7 @@ class RealignSliceAlgorithm(object):
         self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
         self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
 
+        self.nsamples_per_slicegroup = nsamples_per_slicegroup
         self.pe_dir = pe_dir
         self.fmap_scale = echo_spacing * self.dims[pe_dir]/(2.0*np.pi)
         self.affine_class = affine_class
@@ -188,8 +190,8 @@ class RealignSliceAlgorithm(object):
         """
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
         ref2fmri = np.dot(self.inv_affine,inv_trans)
-        self.slg_gm_vox[:] = np.dot(self.gmcoords,ref2fmri.T) #(ABt)t = (B,At)
-        self.slg_wm_vox[:] = np.dot(self.wmcoords,ref2fmri.T)
+        np.dot(self.gmcoords,ref2fmri.T,self.slg_gm_vox) #(ABt)t = (B,At)
+        np.dot(self.wmcoords,ref2fmri.T,self.slg_wm_vox)
 
         #add shift in phase encoding direction
         if self.gm_fmap_values != None:
@@ -206,36 +208,38 @@ class RealignSliceAlgorithm(object):
         last_vol_subset = np.logical_and(
             self.slg_gm_vox[:,sa]<sg[1][1]+0.5,
             self.slg_wm_vox[:,sa]<sg[1][1]+0.5)
-         if sg[0][0] == sg[1][0]:
+        if sg[0][0] == sg[1][0]:
             first_vol_subset = np.logical_and(first_vol_subset,last_vol_subset)
             last_vol_subset = np.array([],dtype=np.bool)
-
-        # adapt subsampling to keep regular amount of points in each slice
-        if sf[0][0] < sg[1][0]-1:
-            samples_slice_hist = np.histogram(
-                self.slg_gm_vox[:,sa],
-                np.arange(self.dims[sa]+1)-0.5)
-        else:
-            samples_slice_hist += np.histogram(
-                self.slg_gm_vox[first_vol_subset,sa],
-                np.arange(self.dims[sa]+1)-0.5)
-            if sg[0][0] < sg[1][0]:
-                samples_slice_hist += np.histogram(
-                    self.slg_gm_vox[last_vol_subset,sa],
-                    np.arange(self.dims[sa]+1)-0.5)
-        
-        
 
         self.skip_sg=False
         if np.count_nonzero(first_vol_subset) == 0:
             print 'skipping slice group, no boundaries contained'
-            self.skip_sg=True
+            self.skip_sg = True
             return
+
+        # adapt subsampling to keep regular amount of points in each slice
+        nslices = self.dims[sa]
+        samples_slice_hist = np.histogram(self.slg_gm_vox[:,sa],
+                                          np.arange(nslices+1)-0.5)
+        
+        maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
+        subset = np.zeros(first_vol_subset.shape,dtype=np.bool)
+        for sl,nsamp in enumerate(samples_slice_hist[0]):
+            stp = max(int(nsamp/maxsamp_per_slice),1)
+            tmp = np.where(np.abs(self.slg_gm_vox[:,sa]-sl)<0.5)[0]
+            if tmp.size > 0:
+                subset[tmp[::stp]] = True
+
+        first_vol_subset = np.logical_and(first_vol_subset,subset)
+#        print 'nbsamples %d' % np.count_nonzero(subset)
+        if sg[0][0] < sg[1][0]:
+            last_vol_subset *= subset
         
         t_gm = np.concatenate(
             [self.scanner_time(self.slg_gm_vox[first_vol_subset,sa],
                                tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_gm_vox[:,sa],
+            [self.scanner_time(self.slg_gm_vox[subset,sa],
                                tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
             [self.scanner_time(self.slg_gm_vox[last_vol_subset,sa],
                                tst[sg[1][0]])])
@@ -243,11 +247,11 @@ class RealignSliceAlgorithm(object):
         t_wm = np.concatenate(
             [self.scanner_time(self.slg_wm_vox[first_vol_subset,sa],
                                tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_wm_vox[:,sa],
+            [self.scanner_time(self.slg_wm_vox[subset,sa],
                                tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
             [self.scanner_time(self.slg_wm_vox[last_vol_subset,sa],
                                tst[sg[1][0]])])
-        
+
         tmp_slg_gm_vox = np.concatenate((
                 self.slg_gm_vox[first_vol_subset],
                 self.slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
@@ -323,32 +327,44 @@ class RealignSliceAlgorithm(object):
             # linearize the data wrt the transform parameters
             # use the auxiliary array to save the current resampled data
             self._aux = self.data
-            nrgy = np.diff(self.data,1,0).mean()/self.stepsize
-            basis = np.eye(6)
-            self._dV=np.zeros(6)
+            nrgy = self._energy()
+            print 'energy %f'% nrgy
+            basis = np.eye(pc.size,dtype=np.bool)
+            A=np.zeros((pc.size,pc.size))
+            A2=np.zeros(pc.size)
             for j in range(pc.size):
-                self.set_transform(self._t, pc + self.stepsize * basis[j])
-                self._dV[j] = np.diff(self.data,1,0).mean()/self.stepsize-nrgy
+                for k in range(j,pc.size):
+                    self.set_transform(self._t, 
+                                       pc + self.stepsize*(basis[j]+basis[k]))
+                    A[j,k]=self._energy()
+                self.set_transform(self._t, pc - self.stepsize*basis[j])
+                A2[j]=self._energy()
+            
             self.transforms[self._t].param = pc
             self.data = self._aux
             # pre-compute gradient and hessian of numerator and
             # denominator
-            self._H = 2.0 * self._dV[:,np.newaxis].dot(self._dV[np.newaxis])
-            self._dV *= 2.0
+            tril = np.tri(pc.size, k=-1,dtype=np.bool)
+            self._dV = (A.diagonal() - nrgy)/self.stepsize*2.0
+            self._H = ((A-A.diagonal()-A.diagonal()[:,np.newaxis]+nrgy)*tril.T+
+                       np.diag(((A.diagonal()-A2)/2-(A.diagonal()-nrgy))) )* 2.0/self.stepsize
+
+            self._H[tril] = self._H.T[tril]
 
     def _energy(self):
         percent_contrast = 200*np.diff(self.data,1,0)/self.data.sum(0)
         percent_contrast[np.abs(percent_contrast)<1e-6] = 0
         bbr_offset=0 # TODO add as an option, and add weighting
         cost = (1.0+np.tanh(percent_contrast-bbr_offset)).mean()
-        print 'mean gradient %f'%cost
         return cost
 
     def _energy_gradient(self):
+        print 'gradient', self._dV
         return self._dV
 
     def _energy_hessian(self):
-        return 
+        print 'hessian',self._H
+        return self._H
 
     def estimate_instant_motion(self, t):
         """
@@ -370,13 +386,16 @@ class RealignSliceAlgorithm(object):
 
         def f(pc):
             self._init_energy(pc)
-            return self._energy()
+            nrgy = self._energy()
+            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
+            return nrgy
 
         def fprime(pc):
             self._init_energy(pc)
             return self._energy_gradient()
 
         def fhess(pc):
+            print 'fhess'
             self._init_energy(pc)
             return self._energy_hessian()
 
@@ -385,7 +404,7 @@ class RealignSliceAlgorithm(object):
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
                                 fprime=fprime,
-#                                fhess=fhess,
+                                fhess=fhess,
                                 **self.optimizer_kwargs)
 
         # With scipy >= 0.9, some scipy minimization functions like
