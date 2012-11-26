@@ -116,6 +116,8 @@ class RealignSliceAlgorithm(object):
         self.slice_thickness=slice_thickness
         self.dims = im4d.get_data().shape
         self.nscans = self.dims[3]
+        self.reference = wmseg
+        self.fmap = fmap
         self.bnd_coords,self.wmcoords,self.gmcoords, \
             self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(
             wmseg,bbr_dist,1,fmap)
@@ -284,18 +286,24 @@ class RealignSliceAlgorithm(object):
     def resample_full_data(self):
         if VERBOSE:
             print('Gridding...')
-        xyz = make_grid(self.dims[0:3])
-        res = np.zeros(self.dims)
+        xyz= np.squeeze(
+            np.mgrid[[slice(0,s) for s in self.reference.shape]+[slice(1,2)]])
+        res = np.zeros(self.reference.shape+(self.nscans,))
+        if self.fmap !=None:
+            fmap_spline = _cspline_transform(self.fmap.get_data())
+            fmap_values = np.empty(self.reference.shape)
+            _cspline_sample3d(
+                fmap_values,fmap_spline,xyz[0],xyz[1],xyz[2],
+                mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
         for t in range(self.nscans):
-            if VERBOSE:
-                print('Fully resampling scan %d/%d' % (t + 1, self.nscans))
-            X, Y, Z = scanner_coords(xyz, self.transforms[t].as_affine(),
-                                     self.inv_affine, self.affine)
-            T = self.scanner_time(Z, self.timestamps[t])
-            _cspline_sample4d(res[:, :, :, t],
-                              self.cbspline,
-                              X, Y, Z, T,
-                              mt='nearest')
+            ref2fmri = np.dot(self.inv_affine,
+                              np.linalg.inv(self.transforms[t].as_affine()))
+            coords = ref2fmri.dot(self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))
+            T = self.scanner_time(coords[2], self.timestamps[t])
+            if self.fmap !=None:
+                coords[self.pe_dir] += fmap_values*self.fmap_scale
+            _cspline_sample4d(res[...,t],self.cbspline, *coords[:3],T=T)
+            print t
         return res
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
