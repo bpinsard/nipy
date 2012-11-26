@@ -18,7 +18,7 @@ from ._registration import (_cspline_transform,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter
 
-def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None, exclude=None):
+def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None):
     
     wmdata = wmseg.get_data().astype(np.float32)
     wmsum = (wmdata>0.5).astype(np.int8)
@@ -45,27 +45,12 @@ def extract_boundaries(wmseg,bbr_dist,subsample=1,fmap=None, exclude=None):
     gradient_mm = wmseg.get_affine()[:3,:3].dot(gradient[boundaries].T).T
     gradient_mm /= np.sqrt((gradient_mm**2).sum(-1))[:,np.newaxis]
     
-    wmcoords = coords_mm[:,:3]+gradient_mm*bbr_dist #climb gradient
-    gmcoords = coords_mm[:,:3]-gradient_mm*bbr_dist #go downhill
-    wm_fmap_values = gm_fmap_values = None
-    if fmap != None:
-        fmap_spline = _cspline_transform(fmap.get_data())
-        fmap_inv_aff = np.linalg.inv(fmap.get_affine())
-        fmap_wmvox = np.dot(
-            fmap_inv_aff,np.concatenate((wmcoords,np.ones((n_bnd_pts,1))),1).T)
-        fmap_gmvox = np.dot(
-            fmap_inv_aff,np.concatenate((gmcoords,np.ones((n_bnd_pts,1))),1).T)
-        wm_fmap_values = np.empty(n_bnd_pts)
-        gm_fmap_values = np.empty(n_bnd_pts)
-        _cspline_sample3d(
-            wm_fmap_values,fmap_spline,
-            fmap_wmvox[0,:],fmap_wmvox[1,:],fmap_wmvox[2,:],
-            mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
-        _cspline_sample3d(
-            gm_fmap_values,fmap_spline,
-            fmap_gmvox[0,:],fmap_gmvox[1,:],fmap_gmvox[2,:],
-            mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
-    return coords_mm,wmcoords,gmcoords,wm_fmap_values,gm_fmap_values
+    wmcoords = coords_mm.copy()
+    gmcoords = coords_mm.copy()
+    wmcoords[:,:3] += gradient_mm*bbr_dist #climb gradient
+    gmcoords[:,:3] -= gradient_mm*bbr_dist #go downhill
+    
+    return coords_mm,wmcoords,gmcoords
 
 
 # Module globals
@@ -118,21 +103,17 @@ class RealignSliceAlgorithm(object):
         self.nscans = self.dims[3]
         self.reference = wmseg
         self.fmap = fmap
-        self.bnd_coords,self.wmcoords,self.gmcoords, \
-            self.wm_fmap_values,self.gm_fmap_values = extract_boundaries(
-            wmseg,bbr_dist,1,fmap)
+        self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
+            wmseg,bbr_dist,1)
         self.border_nvox=self.wmcoords.shape[0]
-        self.gmcoords = np.concatenate((self.gmcoords,
-                                        np.ones((self.border_nvox,1))),1)
-        self.wmcoords = np.concatenate((self.wmcoords,
-                                        np.ones((self.border_nvox,1))),1)
 
         self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
         self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
 
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
-        self.pe_dir = pe_dir
-        self.fmap_scale = echo_spacing * self.dims[pe_dir]/(2.0*np.pi)
+        self.pe_sign = int(pe_dir > 0)*2+1
+        self.pe_dir = abs(pe_dir)
+        self.fmap_scale=self.pe_sign*echo_spacing*self.dims[pe_dir]/(2.0*np.pi)
         self.affine_class = affine_class
 
         # Initialize space/time transformation parameters
@@ -164,6 +145,18 @@ class RealignSliceAlgorithm(object):
         else:
             self.refscan = refscan
 
+        if self.fmap != None:
+            self._fmap_spline = _cspline_transform(self.fmap.get_data())
+            fmap_inv_aff = np.linalg.inv(self.fmap.get_affine())
+            fmap_wmvox = np.dot(fmap_inv_aff,self.wmcoords.T)
+            fmap_gmvox = np.dot(fmap_inv_aff,self.gmcoords.T)
+            self.wm_fmap_values = np.empty(fmap_wmvox.shape[1])
+            self.gm_fmap_values = np.empty(fmap_gmvox.shape[1])
+            _cspline_sample3d(
+                self.wm_fmap_values,self._fmap_spline, *fmap_wmvox[:3])
+            _cspline_sample3d(
+                self.gm_fmap_values,self._fmap_spline, *fmap_gmvox[:3])
+
         # Set the minimization method
         self.set_fmin(optimizer, stepsize,
                       xtol=xtol,
@@ -186,9 +179,6 @@ class RealignSliceAlgorithm(object):
         """
         Resample a particular slice group on the (sub-sampled) working
         grid.
-        
-        x,y,z,t are "head" grid coordinates
-        X,Y,Z,T are "scanner" grid coordinates
         """
         inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
         ref2fmri = np.dot(self.inv_affine,inv_trans)
@@ -196,7 +186,7 @@ class RealignSliceAlgorithm(object):
         np.dot(self.wmcoords,ref2fmri.T,self.slg_wm_vox)
 
         #add shift in phase encoding direction
-        if self.gm_fmap_values != None:
+        if self.fmap != None:
             self.slg_gm_vox[:,self.pe_dir]+=self.gm_fmap_values*self.fmap_scale
             self.slg_wm_vox[:,self.pe_dir]+=self.wm_fmap_values*self.fmap_scale
         
@@ -282,27 +272,29 @@ class RealignSliceAlgorithm(object):
             mz=EXTRAPOLATE_SPACE,
             mt=EXTRAPOLATE_TIME)
 
-
     def resample_full_data(self):
+        # TODO, time interpolation, slice group, ...
         if VERBOSE:
             print('Gridding...')
-        xyz= np.squeeze(
+        xyz = np.squeeze(
             np.mgrid[[slice(0,s) for s in self.reference.shape]+[slice(1,2)]])
         res = np.zeros(self.reference.shape+(self.nscans,))
         if self.fmap !=None:
-            fmap_spline = _cspline_transform(self.fmap.get_data())
             fmap_values = np.empty(self.reference.shape)
-            _cspline_sample3d(
-                fmap_values,fmap_spline,xyz[0],xyz[1],xyz[2],
-                mx=EXTRAPOLATE_SPACE,my=EXTRAPOLATE_SPACE,mz=EXTRAPOLATE_SPACE)
+            _cspline_sample3d(fmap_values,self._fmap_spline,*xyz[:3])
+            fmap_values *= self.fmap_scale
+            print fmap_values.max(),fmap_values.min()
         for t in range(self.nscans):
             ref2fmri = np.dot(self.inv_affine,
                               np.linalg.inv(self.transforms[t].as_affine()))
-            coords = ref2fmri.dot(self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))
-            T = self.scanner_time(coords[2], self.timestamps[t])
-            if self.fmap !=None:
-                coords[self.pe_dir] += fmap_values*self.fmap_scale
-            _cspline_sample4d(res[...,t],self.cbspline, *coords[:3],T=T)
+            coords = ref2fmri.dot(self.reference.get_affine()).dot(
+                xyz.transpose(1,2,0,3))
+            if self.fmap != None:
+                coords[self.pe_dir] += fmap_values
+            T = self.scanner_time(coords[self.im4d.slice_axis],
+                                  self.timestamps[t])
+            _cspline_sample4d(
+                res[...,t],self.cbspline, *coords[:3],T=T)
             print t
         return res
 
