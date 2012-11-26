@@ -119,7 +119,7 @@ class RealignSliceAlgorithm(object):
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
         self.inv_affine = np.linalg.inv(self.affine)
-        #defines bunch of slice for with same affine is estimated
+        #defines bunch of slices for witch same affine is estimated
         if slice_groups == None:
             self.slice_groups=[((t,0),(t,self.dims[im4d.slice_axis])) for t in range(self.nscans)]
             self.parts=self.nscans
@@ -257,6 +257,7 @@ class RealignSliceAlgorithm(object):
         if self.data.shape[1] != t_gm.shape[0]:
             self.data = np.empty((2,t_gm.shape[0]))
 
+        # caution extrapolation requires minimum amount of points in each dimension including time !!!! otherwise returns 0 for data and causes NaNs
         _cspline_sample4d(
             self.data[0],self.cbspline,
             tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],t_gm,
@@ -374,7 +375,7 @@ class RealignSliceAlgorithm(object):
             print('Estimating motion at time frame %d/%d...'
                   % (t + 1, self.nscans))
         if len(self.transforms) <= t:
-            if t > 0:
+            if t > 0 and len(self.transforms) == t:
                 self.transforms.append(self.transforms[t-1].copy())
             else:
                 self.transforms.append(self.affine_class())
