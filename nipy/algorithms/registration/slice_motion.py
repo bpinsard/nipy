@@ -16,19 +16,18 @@ from .affine import Rigid
 from ._registration import (_cspline_transform,
                             _cspline_sample3d,
                             _cspline_sample4d)
-from scipy.ndimage import convolve1d, gaussian_filter
+from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
 
 def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None):
     
     wmdata = wmseg.get_data().astype(np.float32)
-    wmsum = (wmdata>0.5).astype(np.int8)
+    wmmask = (wmdata>0.5)
     gradient = np.empty(wmdata.shape+(3,),dtype=np.float32)
     for axis in xrange(wmdata.ndim): #convolve separable
-        convolve1d(wmsum,np.ones(3),axis,wmsum)
         order = [0]*wmdata.ndim
         order[axis] = 1
         gaussian_filter(wmdata,0.2,order,gradient[...,axis])
-    boundaries = np.logical_and(wmdata>0.5,wmsum<26.5)
+    boundaries = wmmask - binary_erosion(wmmask)
     # allow to remove some boundaries points as trunk for pulsatility
     if exclude != None: 
         boundaries[exclude] = False
@@ -86,7 +85,6 @@ class RealignSliceAlgorithm(object):
                  subsampling=(1, 1, 1),
                  borders=BORDERS,
                  optimizer=OPTIMIZER,
-                 optimize_template=True,
                  xtol=XTOL,
                  ftol=FTOL,
                  gtol=GTOL,
@@ -106,14 +104,15 @@ class RealignSliceAlgorithm(object):
         self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
             wmseg,bbr_dist,1)
         self.border_nvox=self.wmcoords.shape[0]
+        self.min_sample_number = 100
 
         self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
         self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
 
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
-        self.pe_sign = int(pe_dir > 0)*2+1
+        self.pe_sign = int(pe_dir > 0)*2-1
         self.pe_dir = abs(pe_dir)
-        self.fmap_scale=self.pe_sign*echo_spacing*self.dims[pe_dir]/(2.0*np.pi)
+        self.fmap_scale=self.pe_sign*echo_spacing*self.dims[self.pe_dir]/2.0/np.pi
         self.affine_class = affine_class
 
         # Initialize space/time transformation parameters
@@ -122,10 +121,10 @@ class RealignSliceAlgorithm(object):
         #defines bunch of slices for witch same affine is estimated
         if slice_groups == None:
             self.slice_groups=[((t,0),(t,self.dims[im4d.slice_axis])) for t in range(self.nscans)]
-            self.parts=self.nscans
+            self.nparts=self.nscans
         else:
             self.slice_groups=slice_groups
-            self.parts=len(slice_groups)
+            self.nparts=len(slice_groups)
         if transforms == None:
             self.transforms = []
         else:
@@ -136,14 +135,6 @@ class RealignSliceAlgorithm(object):
 
         # Compute the 4d cubic spline transform
         self.cbspline = _cspline_transform(im4d.get_data())
-
-        # The reference scan conventionally defines the head
-        # coordinate system
-        self.optimize_template = optimize_template
-        if not optimize_template and refscan == None:
-            self.refscan = REFSCAN
-        else:
-            self.refscan = refscan
 
         if self.fmap != None:
             self._fmap_spline = _cspline_transform(self.fmap.get_data())
@@ -205,8 +196,8 @@ class RealignSliceAlgorithm(object):
             last_vol_subset = np.array([],dtype=np.bool)
 
         self.skip_sg=False
-        if np.count_nonzero(first_vol_subset) == 0:
-            print 'skipping slice group, no boundaries contained'
+        if np.count_nonzero(first_vol_subset) < self.min_sample_number:
+            print 'skipping slice group, no enough boundaries samples contained'
             self.skip_sg = True
             return
 
@@ -272,6 +263,8 @@ class RealignSliceAlgorithm(object):
             my=EXTRAPOLATE_SPACE,
             mz=EXTRAPOLATE_SPACE,
             mt=EXTRAPOLATE_TIME)
+        self.tmp_slg_wm_vox = tmp_slg_wm_vox
+
 
     def resample_full_data(self):
         # TODO, time interpolation, slice group, ...
@@ -279,23 +272,43 @@ class RealignSliceAlgorithm(object):
             print('Gridding...')
         xyz = np.squeeze(
             np.mgrid[[slice(0,s) for s in self.reference.shape]+[slice(1,2)]])
+        interp_coords = np.empty((3,)+xyz.shape[1:])
         res = np.zeros(self.reference.shape+(self.nscans,))
+        sa = self.im4d.slice_axis
+        subset = np.zeros(self.reference.shape,dtype=np.bool)
         if self.fmap !=None:
             fmap_values = np.empty(self.reference.shape)
             _cspline_sample3d(fmap_values,self._fmap_spline,*xyz[:3])
             fmap_values *= self.fmap_scale
-            print fmap_values.max(),fmap_values.min()
+            print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
+                                                    fmap_values.min())
         for t in range(self.nscans):
-            ref2fmri = np.dot(self.inv_affine,
-                              np.linalg.inv(self.transforms[t].as_affine()))
-            coords = ref2fmri.dot(self.reference.get_affine()).dot(
-                xyz.transpose(1,2,0,3))
-            if self.fmap != None:
-                coords[self.pe_dir] += fmap_values
-            T = self.scanner_time(coords[self.im4d.slice_axis],
-                                  self.timestamps[t])
-            _cspline_sample4d(
-                res[...,t],self.cbspline, *coords[:3],T=T)
+            sgs_trs = [(sg,trans) for sg,trans in zip(self.slice_groups,self.transforms) if sg[0][0]<=t and t<= sg[1][0]]
+            if len(sgs_trs)==1: #trivial case
+                print 'easy peasy'
+                interp_coords[...] = np.dot(
+                    np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
+                    self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))[:3]
+                if self.fmap != None:
+                    interp_coords[self.pe_dir] += fmap_values
+            else: # we have to solve from which transform we sample
+                print 'more tricky'
+                for sg,trans in sgs_trs:
+                    coords = np.dot(
+                      np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
+                      self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))
+                    if self.fmap != None:
+                        coords[self.pe_dir] += fmap_values
+                    subset.fill(False)
+                    if sg[0][0]==t:
+                        subset[:] = coords[sa] >= (sg[0][1]-0.5)
+                    if sg[1][0]==t:
+                        np.logical_and(coords[sa] <= (sg[1][1]+0.5),
+                                       subset,subset)
+                    interp_coords[:,subset] = coords[:3,subset]
+            T = self.scanner_time(interp_coords[sa],self.timestamps[t])
+            _cspline_sample4d(res[...,t],self.cbspline,*interp_coords[:3],T=T,
+                              mt=EXTRAPOLATE_TIME)
             print t
         return res
 
@@ -367,20 +380,21 @@ class RealignSliceAlgorithm(object):
         print 'hessian',self._H
         return self._H
 
-    def estimate_instant_motion(self, t):
+    def estimate_instant_motion(self, sg):
         """
         Estimate motion parameters at a particular time.
         """
         if VERBOSE:
-            print('Estimating motion at time frame %d/%d...'
-                  % (t + 1, self.nscans))
-        if len(self.transforms) <= t:
-            if t > 0 and len(self.transforms) == t:
-                self.transforms.append(self.transforms[t-1].copy())
+            print('Estimating motion at slice group %d/%d...'
+                  % (sg + 1, self.nparts))
+        if len(self.transforms) <= sg:
+            if sg > 0 and len(self.transforms) == sg:
+                self.transforms.append(self.transforms[sg-1].copy())
             else:
                 self.transforms.append(self.affine_class())
-        
-        self.set_transform(t,self.transforms[t].param)
+        self.resample(sg)
+
+        self.set_transform(sg,self.transforms[sg].param)
         if self.skip_sg:
             return
         
@@ -388,7 +402,8 @@ class RealignSliceAlgorithm(object):
         def f(pc):
             self._init_energy(pc)
             nrgy = self._energy()
-            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
+            print 'f %f : %f %f %f %f %f %f | %d samples'%tuple(
+                [nrgy] + pc.tolist() + [self.data.shape[1]])
             return nrgy
 
         def fprime(pc):
@@ -401,7 +416,7 @@ class RealignSliceAlgorithm(object):
             return self._energy_hessian()
 
         self._pc = None
-        self._t = t
+        self._t = sg
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
                                 fprime=fprime,
@@ -417,8 +432,8 @@ class RealignSliceAlgorithm(object):
         # multiscale pyramid. To avoid crashes, we insert a try/catch
         # instruction.
 #        try:
-        pc = fmin(f, self.transforms[t].param, *args, **kwargs)
-        self.set_transform(t, pc)
+        pc = fmin(f, self.transforms[sg].param, *args, **kwargs)
+        self.set_transform(sg, pc)
         #except:
         #warnings.warn('Minimization failed')
 
@@ -430,8 +445,8 @@ class RealignSliceAlgorithm(object):
         optimized sequentially.
         """
         
-        for t in range(self.parts):
-            print 'slice group %d' % t
-            self.estimate_instant_motion(t)
+        for sg in range(self.nparts):
+            print 'slice group %d' % sg
+            self.estimate_instant_motion(sg)
             if VERBOSE:
-                print(self.transforms[t])
+                print(self.transforms[sg])
