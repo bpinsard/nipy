@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 
 from nibabel.affines import apply_affine
+import nibabel as nb
 
 from ...fixes.nibabel import io_orientation
 
@@ -75,6 +76,7 @@ class RealignSliceAlgorithm(object):
     def __init__(self,
                  im4d,
                  wmseg,
+                 exclude_boundaries_mask=None,
                  fmap=None,
                  pe_dir=1,
                  echo_spacing=0.005,
@@ -82,8 +84,6 @@ class RealignSliceAlgorithm(object):
                  affine_class=Rigid,
                  slice_groups=None,
                  transforms=None,
-                 subsampling=(1, 1, 1),
-                 borders=BORDERS,
                  optimizer=OPTIMIZER,
                  xtol=XTOL,
                  ftol=FTOL,
@@ -91,7 +91,6 @@ class RealignSliceAlgorithm(object):
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
-                 refscan=REFSCAN,
                  nsamples_per_slicegroup=2000,
                  slice_thickness=3.0):
 
@@ -102,7 +101,7 @@ class RealignSliceAlgorithm(object):
         self.reference = wmseg
         self.fmap = fmap
         self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
-            wmseg,bbr_dist,1)
+            wmseg,bbr_dist,1,exclude_boundaries_mask)
         self.border_nvox=self.wmcoords.shape[0]
         self.min_sample_number = 100
 
@@ -266,18 +265,23 @@ class RealignSliceAlgorithm(object):
         self.tmp_slg_wm_vox = tmp_slg_wm_vox
 
 
-    def resample_full_data(self):
+    def resample_full_data(self, voxsize=None):
         # TODO, time interpolation, slice group, ...
         if VERBOSE:
             print('Gridding...')
-        xyz = np.squeeze(
-            np.mgrid[[slice(0,s) for s in self.reference.shape]+[slice(1,2)]])
+        mat=self.reference.get_affine()
+        shape = self.reference.shape
+        if voxsize!=None:
+            mat,shape=resample_mat_shape(self.reference.get_affine(),
+                                         self.reference.shape,
+                                         voxsize)
+        xyz=np.squeeze(np.mgrid[[slice(0,s) for s in shape]+[slice(1,2)]])
         interp_coords = np.empty((3,)+xyz.shape[1:])
-        res = np.zeros(self.reference.shape+(self.nscans,))
+        res = np.zeros(shape+(self.nscans,))
         sa = self.im4d.slice_axis
-        subset = np.zeros(self.reference.shape,dtype=np.bool)
+        subset = np.zeros(shape,dtype=np.bool)
         if self.fmap !=None:
-            fmap_values = np.empty(self.reference.shape)
+            fmap_values = np.empty(shape)
             _cspline_sample3d(fmap_values,self._fmap_spline,*xyz[:3])
             fmap_values *= self.fmap_scale
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
@@ -288,7 +292,7 @@ class RealignSliceAlgorithm(object):
                 print 'easy peasy'
                 interp_coords[...] = np.dot(
                     np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                    self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))[:3]
+                    mat).dot(xyz.transpose(1,2,0,3))[:3]
                 if self.fmap != None:
                     interp_coords[self.pe_dir] += fmap_values
             else: # we have to solve from which transform we sample
@@ -296,7 +300,7 @@ class RealignSliceAlgorithm(object):
                 for sg,trans in sgs_trs:
                     coords = np.dot(
                       np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                      self.reference.get_affine()).dot(xyz.transpose(1,2,0,3))
+                      mat).dot(xyz.transpose(1,2,0,3))
                     if self.fmap != None:
                         coords[self.pe_dir] += fmap_values
                     subset.fill(False)
@@ -310,7 +314,7 @@ class RealignSliceAlgorithm(object):
             _cspline_sample4d(res[...,t],self.cbspline,*interp_coords[:3],T=T,
                               mt=EXTRAPOLATE_TIME)
             print t
-        return res
+        return nb.Nifti1Image(res,mat)
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
@@ -450,3 +454,15 @@ class RealignSliceAlgorithm(object):
             self.estimate_instant_motion(sg)
             if VERBOSE:
                 print(self.transforms[sg])
+
+
+def resample_mat_shape(mat,shape,voxsize):
+    k=np.diag(mat[:3,:3].dot(np.diag(np.array(shape)-1.0)))
+    newshape = np.round(k/voxsize)
+    res = k-newshape*voxsize
+    old_voxsize=np.sqrt((mat[:3,:3]**2).sum(0))
+    newmat=np.eye(4)
+    newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
+    newmat[:3,3] = mat[:3,3]+res/2
+    newshape = np.abs(newshape).astype(np.int32)
+    return newmat,tuple(newshape.tolist())
