@@ -102,7 +102,7 @@ class RealignSliceAlgorithm(object):
         self.fmap = fmap
         self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
             wmseg,bbr_dist,1,exclude_boundaries_mask)
-        self.border_nvox=self.wmcoords.shape[0]
+        self.border_nvox = self.bnd_coords.shape[0]
         self.min_sample_number = 100
 
         self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
@@ -156,93 +156,96 @@ class RealignSliceAlgorithm(object):
                       maxfun=maxfun)
 
         self.data = np.array([[]])
-
-        # Auxiliary array for realignment estimation
-#        self._res = np.zeros(masksize, dtype='double')
-#        self._res0 = np.zeros(masksize, dtype='double')
-#        self._aux = np.zeros(masksize, dtype='double')
-#        self.A = np.zeros((masksize, self.transforms[0].param.size),
-#                          dtype='double')
         self._pc = None
-
-    def resample(self, sg):
+        self._last_subsampling_transform = affine_class(np.ones(12)*5)
+        self._subset = slice(0,None)
+        self._first_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
+        self._last_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
+        
+    def resample(self, sgi):
         """
         Resample a particular slice group on the (sub-sampled) working
         grid.
         """
-        inv_trans = np.linalg.inv(self.transforms[sg].as_affine())
-        ref2fmri = np.dot(self.inv_affine,inv_trans)
-        np.dot(self.gmcoords,ref2fmri.T,self.slg_gm_vox) #(ABt)t = (B,At)
-        np.dot(self.wmcoords,ref2fmri.T,self.slg_wm_vox)
-
-        #add shift in phase encoding direction
-        if self.fmap != None:
-            self.slg_gm_vox[:,self.pe_dir]+=self.gm_fmap_values*self.fmap_scale
-            self.slg_wm_vox[:,self.pe_dir]+=self.wm_fmap_values*self.fmap_scale
-        
-        sg = self.slice_groups[sg]
         tst = self.timestamps
         sa = self.im4d.slice_axis
-        first_vol_subset = np.logical_and(
-            self.slg_gm_vox[:,sa]>sg[0][1]-0.5,
-            self.slg_wm_vox[:,sa]>sg[0][1]-0.5)
+        sg = self.slice_groups[sgi]
 
-        last_vol_subset = np.logical_and(
-            self.slg_gm_vox[:,sa]<sg[1][1]+0.5,
-            self.slg_wm_vox[:,sa]<sg[1][1]+0.5)
-        if sg[0][0] == sg[1][0]:
-            first_vol_subset = np.logical_and(first_vol_subset,last_vol_subset)
-            last_vol_subset = np.array([],dtype=np.bool)
+        inv_trans = np.linalg.inv(self.transforms[sgi].as_affine())
+        ref2fmri = np.dot(self.inv_affine,inv_trans)
 
+        # if change of test points z is above threshold recompute subset
+        test_points=np.array([[0,0,sg[0][1]],[0,0,sg[1][1]]])
+        recompute_subset = np.abs(
+            self._last_subsampling_transform.apply(test_points)-
+            self.transforms[sgi].apply(test_points))[:,sa].max() > 0.1
+        if recompute_subset:
+            print 'recompute subset',np.abs(
+            self._last_subsampling_transform.apply(test_points)-
+            self.transforms[sgi].apply(test_points))[:,sa].max()
+            self._subset = slice(0,None)
+        self.slg_gm_vox[self._subset]=np.dot(self.gmcoords[self._subset],
+                                             ref2fmri.T)
+        self.slg_wm_vox[self._subset]=np.dot(self.wmcoords[self._subset],
+                                             ref2fmri.T)
+        #add shift in phase encoding direction
+        if self.fmap != None:
+            self.slg_gm_vox[self._subset,self.pe_dir]+=self.gm_fmap_values[self._subset]*self.fmap_scale
+            self.slg_wm_vox[self._subset,self.pe_dir]+=self.wm_fmap_values[self._subset]*self.fmap_scale
+
+        if recompute_subset:
+            self._last_subsampling_transform = self.transforms[sgi].copy()
+            # adapt subsampling to keep regular amount of points in each slice
+            nslices = self.dims[sa]
+            zs = (self.slg_gm_vox[:,sa]+self.slg_wm_vox[:,sa])/2.
+            samples_slice_hist = np.histogram(zs,np.arange(nslices+1)-0.5)
+
+            maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
+            self._subset = np.zeros(self.border_nvox, dtype=np.bool)
+            for sl,nsamp in enumerate(samples_slice_hist[0]):
+                stp = max(int(nsamp/maxsamp_per_slice),1)
+                tmp = np.where(np.abs(zs-sl)<0.5)[0]
+                if tmp.size > 0:
+                    self._subset[tmp[::stp]] = True
+
+            np.logical_and(zs>sg[0][1]-0.5,self._subset,self._first_vol_subset)
+            np.logical_and(zs<sg[1][1]+0.5,self._subset,self._last_vol_subset)
+            if sg[0][0] == sg[1][0]:
+                np.logical_and(self._last_vol_subset,self._first_vol_subset,
+                               self._first_vol_subset)
+                self._last_vol_subset.fill(False)
+                self._subset[:] = self._first_vol_subset[:]
         self.skip_sg=False
-        if np.count_nonzero(first_vol_subset) < self.min_sample_number:
-            print 'skipping slice group, no enough boundaries samples contained'
+        if np.count_nonzero(self._first_vol_subset) < self.min_sample_number:
+            print 'skipping slice group, no enough boundaries samples'
             self.skip_sg = True
             return
-
-        # adapt subsampling to keep regular amount of points in each slice
-        nslices = self.dims[sa]
-        samples_slice_hist = np.histogram(self.slg_gm_vox[:,sa],
-                                          np.arange(nslices+1)-0.5)
-        
-        maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
-        subset = np.zeros(first_vol_subset.shape,dtype=np.bool)
-        for sl,nsamp in enumerate(samples_slice_hist[0]):
-            stp = max(int(nsamp/maxsamp_per_slice),1)
-            tmp = np.where(np.abs(self.slg_gm_vox[:,sa]-sl)<0.5)[0]
-            if tmp.size > 0:
-                subset[tmp[::stp]] = True
-
-        first_vol_subset = np.logical_and(first_vol_subset,subset)
-#        print 'nbsamples %d' % np.count_nonzero(subset)
-        if sg[0][0] < sg[1][0]:
-            last_vol_subset *= subset
         
         t_gm = np.concatenate(
-            [self.scanner_time(self.slg_gm_vox[first_vol_subset,sa],
+            [self.scanner_time(self.slg_gm_vox[self._first_vol_subset,sa],
                                tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_gm_vox[subset,sa],
+            [self.scanner_time(self.slg_gm_vox[self._subset,sa],
                                tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(self.slg_gm_vox[last_vol_subset,sa],
+            [self.scanner_time(self.slg_gm_vox[self._last_vol_subset,sa],
                                tst[sg[1][0]])])
 
         t_wm = np.concatenate(
-            [self.scanner_time(self.slg_wm_vox[first_vol_subset,sa],
+            [self.scanner_time(self.slg_wm_vox[self._first_vol_subset,sa],
                                tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_wm_vox[subset,sa],
+            [self.scanner_time(self.slg_wm_vox[self._subset,sa],
                                tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(self.slg_wm_vox[last_vol_subset,sa],
+            [self.scanner_time(self.slg_wm_vox[self._last_vol_subset,sa],
                                tst[sg[1][0]])])
 
         tmp_slg_gm_vox = np.concatenate((
-                self.slg_gm_vox[first_vol_subset],
+                self.slg_gm_vox[self._first_vol_subset],
                 self.slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
-                self.slg_gm_vox[last_vol_subset]))
+                self.slg_gm_vox[self._last_vol_subset]))
 
         tmp_slg_wm_vox = np.concatenate((
-                self.slg_wm_vox[first_vol_subset],
+                self.slg_wm_vox[self._first_vol_subset],
                 self.slg_wm_vox.repeat(sg[1][0]-sg[0][0],0),
-                self.slg_wm_vox[last_vol_subset]))
+                self.slg_wm_vox[self._last_vol_subset]))
 
         if self.data.shape[1] != t_gm.shape[0]:
             self.data = np.empty((2,t_gm.shape[0]))
@@ -262,8 +265,6 @@ class RealignSliceAlgorithm(object):
             my=EXTRAPOLATE_SPACE,
             mz=EXTRAPOLATE_SPACE,
             mt=EXTRAPOLATE_TIME)
-        self.tmp_slg_wm_vox = tmp_slg_wm_vox
-
 
     def resample_full_data(self, voxsize=None):
         # TODO, time interpolation, slice group, ...
@@ -396,12 +397,12 @@ class RealignSliceAlgorithm(object):
                 self.transforms.append(self.transforms[sg-1].copy())
             else:
                 self.transforms.append(self.affine_class())
+        self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
         self.resample(sg)
 
         self.set_transform(sg,self.transforms[sg].param)
         if self.skip_sg:
             return
-        
 
         def f(pc):
             self._init_energy(pc)
