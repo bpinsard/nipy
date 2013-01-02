@@ -221,6 +221,7 @@ class RealignSliceAlgorithm(object):
             self.skip_sg = True
             return
         
+        """
         t_gm = np.concatenate(
             [self.scanner_time(self.slg_gm_vox[self._first_vol_subset,sa],
                                tst[sg[0][0]])]+
@@ -236,6 +237,12 @@ class RealignSliceAlgorithm(object):
                                tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
             [self.scanner_time(self.slg_wm_vox[self._last_vol_subset,sa],
                                tst[sg[1][0]])])
+                               """
+        t_gm = np.concatenate(
+            [np.ones(self._first_vol_subset.sum())*sg[0][0]]+
+            [np.ones(self._subset.sum())*t for t in xrange(sg[0][0]+1,sg[1][0])]+
+            [np.ones(self._last_vol_subset.sum())*sg[1][0]])
+        t_wm = t_gm
 
         tmp_slg_gm_vox = np.concatenate((
                 self.slg_gm_vox[self._first_vol_subset],
