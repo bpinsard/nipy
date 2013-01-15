@@ -68,7 +68,7 @@ MAXFUN = None
 BORDERS = 1, 1, 1
 REFSCAN = 0
 EXTRAPOLATE_SPACE = 'reflect'
-EXTRAPOLATE_TIME = 'reflect'
+EXTRAPOLATE_TIME = 'nearest'
 
 
 class RealignSliceAlgorithm(object):
@@ -97,7 +97,9 @@ class RealignSliceAlgorithm(object):
         self.im4d = im4d
         self.slice_thickness=slice_thickness
         self.dims = im4d.get_data().shape
-        self.nscans = self.dims[3]
+        self.nscans = 1
+        if len(self.dims) > 3:
+            self.nscans = self.dims[3]
         self.reference = wmseg
         self.fmap = fmap
         self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
@@ -258,6 +260,20 @@ class RealignSliceAlgorithm(object):
             self.data = np.empty((2,t_gm.shape[0]))
 
         # caution extrapolation requires minimum amount of points in each dimension including time !!!! otherwise returns 0 for data and causes NaNs
+        if len(self.cbspline.shape)<4:
+            _cspline_sample3d(
+                self.data[0],self.cbspline,
+                tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],
+                mx=EXTRAPOLATE_SPACE,
+                my=EXTRAPOLATE_SPACE,
+                mz=EXTRAPOLATE_SPACE,)
+            _cspline_sample3d(
+                self.data[1],self.cbspline,
+                tmp_slg_wm_vox[:,0], tmp_slg_wm_vox[:,1], tmp_slg_wm_vox[:,2],
+                mx=EXTRAPOLATE_SPACE,
+                my=EXTRAPOLATE_SPACE,
+                mz=EXTRAPOLATE_SPACE)
+            return 
         _cspline_sample4d(
             self.data[0],self.cbspline,
             tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],t_gm,
@@ -319,8 +335,13 @@ class RealignSliceAlgorithm(object):
                                        subset,subset)
                     interp_coords[:,subset] = coords[:3,subset]
             T = self.scanner_time(interp_coords[sa],self.timestamps[t])
-            _cspline_sample4d(res[...,t],self.cbspline,*interp_coords[:3],T=T,
-                              mt=EXTRAPOLATE_TIME)
+            if len(self.cbspline.shape)<4:
+                _cspline_sample3d(res[...],self.cbspline,*interp_coords[:3])
+                
+            else:
+                _cspline_sample4d(res[...,t],self.cbspline,
+                                  *interp_coords[:3],T=T,
+                                  mt=EXTRAPOLATE_TIME)
             print t
         return nb.Nifti1Image(res,mat)
 
