@@ -183,7 +183,7 @@ class RealignSliceAlgorithm(object):
             self.transforms[sgi].apply(test_points))[:,sa].max() > 0.1
         if recompute_subset:
             print 'recompute subset',np.abs(
-            self._last_subsampling_transform.apply(test_points)-
+                self._last_subsampling_transform.apply(test_points)-
             self.transforms[sgi].apply(test_points))[:,sa].max()
             self._subset = slice(0,None)
         self.slg_gm_vox[self._subset]=np.dot(self.gmcoords[self._subset],
@@ -301,7 +301,8 @@ class RealignSliceAlgorithm(object):
                                          voxsize)
         xyz=np.squeeze(np.mgrid[[slice(0,s) for s in shape]+[slice(1,2)]])
         interp_coords = np.empty((3,)+xyz.shape[1:])
-        res = np.zeros(shape+(self.nscans,))
+        res = np.zeros(shape+(self.nscans,), dtype=np.float32)
+        tmp = np.zeros(shape)
         sa = self.im4d.slice_axis
         subset = np.zeros(shape,dtype=np.bool)
         if self.fmap !=None:
@@ -336,12 +337,12 @@ class RealignSliceAlgorithm(object):
                     interp_coords[:,subset] = coords[:3,subset]
             T = self.scanner_time(interp_coords[sa],self.timestamps[t])
             if len(self.cbspline.shape)<4:
-                _cspline_sample3d(res[...],self.cbspline,*interp_coords[:3])
-                
+                _cspline_sample3d(tmp,self.cbspline,*interp_coords[:3])
             else:
-                _cspline_sample4d(res[...,t],self.cbspline,
+                _cspline_sample4d(tmp,self.cbspline,
                                   *interp_coords[:3],T=T,
                                   mt=EXTRAPOLATE_TIME)
+            res[...,t] = tmp
             print t
         return nb.Nifti1Image(res,mat)
 
