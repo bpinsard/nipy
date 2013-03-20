@@ -49,7 +49,7 @@ SPEEDUP = 5, 2
 def interp_slice_order(Z, slice_order):
     Z = np.asarray(Z)
     nslices = len(slice_order)
-    aux = np.asarray(list(slice_order) + [slice_order[0] + nslices])
+    aux = np.argsort(np.asarray(list(slice_order) + [slice_order[0]+nslices]))
     Zf = np.floor(Z).astype('int')
     w = Z - Zf
     Zal = Zf % nslices
