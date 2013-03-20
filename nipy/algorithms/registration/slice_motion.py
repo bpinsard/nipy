@@ -135,8 +135,13 @@ class RealignSliceAlgorithm(object):
         self.scanner_time = im4d.scanner_time
         self.timestamps = im4d.tr * np.arange(self.nscans)
 
+        # Compute the 3d cubic spline transform
+        self.cbspline = np.zeros(self.dims, dtype='double')
+        for t in range(self.dims[3]):
+            self.cbspline[:, :, :, t] =\
+                _cspline_transform(im4d.get_data()[:, :, :, t])
         # Compute the 4d cubic spline transform
-        self.cbspline = _cspline_transform(im4d.get_data())
+#        self.cbspline = _cspline_transform(im4d.get_data())
 
         if self.fmap != None:
             self._fmap_spline = _cspline_transform(self.fmap.get_data())
@@ -256,11 +261,13 @@ class RealignSliceAlgorithm(object):
             del self.data
             self.data = np.empty((2,tmp_slg_wm_vox.shape[0]))
 
+
         # caution extrapolation requires minimum amount of points in each dimension including time !!!! otherwise returns 0 for data and causes NaNs
-        if len(self.cbspline.shape)<4:
-            self.resample(self.data[0],tmp_slg_gm_vox)
-            self.resample(self.data[1],tmp_slg_wm_vox)
-        else:
+#        if len(self.cbspline.shape)<4:
+        self.resample(self.data[0],tmp_slg_gm_vox)
+        self.resample(self.data[1],tmp_slg_wm_vox)
+        if False:
+        #else:
             n_samples = self._first_vol_subset.sum() +\
                 self._subset.sum()*(sg[1][0]-sg[0][0]) +\
                 self._last_vol_subset.sum()
