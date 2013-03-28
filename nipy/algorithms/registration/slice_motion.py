@@ -19,7 +19,7 @@ from ._registration import (_cspline_transform,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
 import scipy.stats
-import scipy.ndimage.interpolation
+from scipy.ndimage.interpolation import map_coordinates
 
 
 # Module globals
@@ -107,7 +107,7 @@ def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2):
     theta = np.pi * gbarte_2 * lrgradients
     re = 0.5 * (sinc[0]*np.cos(theta[0])+sinc[1]*np.cos(theta[1]))
     im = 0.5 * (sinc[0]*np.sin(theta[0])+sinc[1]*np.sin(theta[1]))
-    sigloss = np.sqrt(re**2+im**2)
+    sigloss = np.sqrt(re**2+im**2).astype(fieldmap.dtype)
     del lrgradients, nans, sinc, theta, re, im
     sigloss[np.isnan(sigloss)]=0
     return sigloss
@@ -316,23 +316,20 @@ class RealignSliceAlgorithm(object):
 #        self.cbspline = _cspline_transform(im4d.get_data())
 
         if self.fmap != None:
-            self._fmap_spline = _cspline_transform(self.fmap.get_data())
-            sigloss = fieldmap_to_sigloss(
+            self.sigloss = fieldmap_to_sigloss(
                 self.fmap.get_data(),self.mask.get_data(),
                 self.echo_time,self.im4d.slice_axis)
-            self._sigloss_spline = _cspline_transform(sigloss)
             fmap_inv_aff = np.linalg.inv(self.fmap.get_affine())
             fmap_vox = apply_affine(fmap_inv_aff,
                                     self.class_coords.reshape(-1,3))
-            self.fmap_values = np.empty(self.class_coords.shape[:2])
-            _cspline_sample3d(
-                self.fmap_values, self._fmap_spline, *fmap_vox.T)
-            self.sigloss_values = np.empty(self.class_coords.shape[:2])
-            _cspline_sample3d(
-                self.sigloss_values, self._sigloss_spline, *fmap_vox.T)
+            self.fmap_values = map_coordinates(
+                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)
+            self.sigloss_values = map_coordinates(
+                self.sigloss, fmap_vox.T, order=1).reshape(2,self.border_nvox)
             del fmap_vox
         else:
             self.fmap_values = None
+            self.sigloss_values = None
             
         # Set the minimization method
         self.set_fmin(optimizer, stepsize,
@@ -394,9 +391,9 @@ class RealignSliceAlgorithm(object):
             zs = self.slg_class_voxels[...,sa].sum(0)/2.
             samples_slice_hist = np.histogram(zs,np.arange(nslices+1)-self.st_ratio)
             # this computation is wrong 
-            maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
             self._subsamp[:] = False
             """
+            maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
             for sl,nsamp in enumerate(samples_slice_hist[0]):
                 stp = max(int(nsamp/maxsamp_per_slice),1)
                 tmp = np.where(np.abs(zs-sl)<0.5)[0]
@@ -506,29 +503,28 @@ class RealignSliceAlgorithm(object):
         shape = self.reference.shape
         if reference != None:
             mat,shape = reference.get_affine(),reference.shape
-        if voxsize!=None:
+            voxsize = reference.get_header().get_zooms()[:3]
+        elif voxsize!=None:
             mat,shape=resample_mat_shape(self.reference.get_affine(),
                                          self.reference.shape,voxsize)
         new_to_t1 = np.linalg.inv(self.fmap.get_affine()).dot(mat)
         xyz = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]],0,4)
         interp_coords = apply_affine(new_to_t1,xyz)
         res = np.zeros(shape+(self.nscans,), dtype=np.float32)
-        if self.mask != None and False:
-            mask = np.zeros(shape,np.uint8)
-            scipy.ndimage.interpolation.map_coordinates(
-                self.mask.get_data(),interp_coords.transpose(3,0,1,2),mask)
+        if self.mask != None:
+            mask = map_coordinates(self.mask.get_data(),
+                                   interp_coords.reshape(-1,3).T,
+                                   order=0).reshape(shape)
             mask = mask>.5
             xyz = xyz[mask]
-        interp_coords = np.empty(xyz.shape)
+            interp_coords = interp_coords[mask]
         tmp = np.zeros(xyz.shape[:-1])
         sa = self.im4d.slice_axis
         subset = np.zeros(shape,dtype=np.bool)
         if self.fmap != None:
-            fmap_values = np.empty(xyz.shape[:-1])
-            _cspline_sample3d(fmap_values,self._fmap_spline,
-                              interp_coords[...,0],
-                              interp_coords[...,1],
-                              interp_coords[...,2])
+            fmap_values = map_coordinates(self.fmap.get_data(),
+                                          interp_coords.reshape(-1,3).T,
+                                          order=1).reshape(xyz.shape[:-1])
             fmap_values *= self.fmap_scale
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
                                                     fmap_values.min())
@@ -563,12 +559,15 @@ class RealignSliceAlgorithm(object):
                         
                     interp_coords[subset,:] = coords[subset]
             self.resample(tmp,interp_coords,t)
-            if self.mask !=None and False:
+            if self.mask !=None:
                 res[mask,t] = tmp
             else:
                 res[...,t] = tmp
             print t
-        return nb.Nifti1Image(res,mat)
+        out_nii = nb.Nifti1Image(res,mat)
+        out_nii.get_header().set_xyzt_units('mm','sec')
+        out_nii.get_header().set_zooms(voxsize + (self.im4d.tr,))
+        return out_nii
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
