@@ -76,20 +76,19 @@ def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None,
     class_coords[0] = coords_mm - gradient_mm*bbr_dist #go downhill gray
 
     # remove the points that would fall out of the aimed class
-    wm_splines = _cspline_transform(wmseg.get_data())
-    sample_values = np.empty(class_coords.shape[:2])
     class_voxs = apply_affine(np.linalg.inv(wmseg.get_affine()),
                               class_coords.reshape((-1,3)))
-    _cspline_sample3d(sample_values,wm_splines,
-                      class_voxs[:,0],class_voxs[:,1],class_voxs[:,2])
+    # linear interpolation to avoid negative values
+    sample_values = map_coordinates(wmseg.get_data(), class_voxs.T, order=1
+                                    ).reshape(class_coords.shape[:2])
     valid_subset = np.logical_and(sample_values[0] < threshold+margin,
                                   sample_values[1] > threshold-margin)
-    del class_voxs, sample_values, wm_splines
+    del class_voxs, sample_values
     
     return coords_mm[valid_subset],class_coords[:,valid_subset]
 
 
-def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2):
+def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
     tmp = fieldmap.copy()
     tmp[np.logical_not(mask)] = np.nan
     sel, sel2 = [slice(None)]*3,[slice(None)]*3
@@ -102,6 +101,8 @@ def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2):
     lrgradients[0,nans[0]] = lrgradients[1,nans[0]]
     lrgradients[1,nans[1]] = lrgradients[0,nans[1]]
     lrgradients[:,np.logical_not(mask)] = np.nan
+    if scaling != 1 :
+        lrgradients*=scaling
     gbarte_2 = echo_time / 4.0 / np.pi
     sinc = np.sinc(gbarte_2*lrgradients)
     theta = np.pi * gbarte_2 * lrgradients
@@ -433,16 +434,17 @@ class RealignSliceAlgorithm(object):
                                  self.class_coords,self.slg_class_voxels,
                                  self.fmap_values,self._subsamp)
         nsamples_1vol = np.count_nonzero(self._first_vol_subset_ssamp)
-        self.skip_sg=False
-        if nsamples_1vol < self.min_sample_number:
-            print 'skipping slice group, only %d samples'%nsamples_1vol
-            self.skip_sg = True
-            return
 
         n_samples = np.count_nonzero(self._subsamp)
         n_samples_lvol = np.count_nonzero(self._last_vol_subset_ssamp)
         n_samples_total = nsamples_1vol + n_samples_lvol +\
             n_samples * max( sg[1][0]-sg[0][0]-1, 0)
+
+        self.skip_sg=False
+        if n_samples_total < self.min_sample_number:
+            print 'skipping slice group, only %d samples'%n_samples_total
+            self.skip_sg = True
+            return
             
         # if subsampling changes
         if self.data.shape[1] != n_samples_total:
@@ -457,7 +459,7 @@ class RealignSliceAlgorithm(object):
             seek = nsamples_1vol + n_samples * (i - sg[0][0] -1)
             self.resample(self.data[:,seek:seek+n_samples],
                           self.slg_class_voxels[:,self._subsamp],i)
-        if sg[0][0] < sg[1][0]:
+        if sg[0][0] < sg[1][0] and n_samples_lvol > 0:
             self.resample(
                 self.data[:,-n_samples_lvol:None],
                 self.slg_class_voxels[:,self._last_vol_subset_ssamp],sg[1][0])
