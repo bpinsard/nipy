@@ -509,7 +509,7 @@ class RealignSliceAlgorithm(object):
         elif voxsize!=None:
             mat,shape=resample_mat_shape(self.reference.get_affine(),
                                          self.reference.shape,voxsize)
-        new_to_t1 = np.linalg.inv(self.fmap.get_affine()).dot(mat)
+        new_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(mat)
         xyz = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]],0,4)
         interp_coords = apply_affine(new_to_t1,xyz)
         res = np.zeros(shape+(self.nscans,), dtype=np.float32)
@@ -534,17 +534,15 @@ class RealignSliceAlgorithm(object):
             sgs_trs = [(sg,trans) for sg,trans in zip(self.slice_groups,self.transforms) if sg[0][0]<=t and t<= sg[1][0]]
             if len(sgs_trs)==1: #trivial case
                 print 'easy peasy'
-                interp_coords[...] = apply_affine(np.dot(
-                    np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                    mat),xyz)
+                interp_coords[...] = apply_affine(self.inv_affine.dot(
+                        np.linalg.inv(trans.as_affine())).dot(mat),xyz)
                 if self.fmap != None:
                     interp_coords[...,self.pe_dir] += fmap_values
             else: # we have to solve from which transform we sample
                 print 'more tricky'
                 for sg,trans in sgs_trs:
-                    coords = apply_affine(np.dot(
-                      np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                      mat), xyz)
+                    coords = apply_affine(self.inv_affine.dot(
+                            np.linalg.inv(trans.as_affine())).dot(mat), xyz)
                     if self.fmap != None:
                         coords[...,self.pe_dir] += fmap_values
                     subset.fill(False)
@@ -570,6 +568,23 @@ class RealignSliceAlgorithm(object):
         out_nii.get_header().set_xyzt_units('mm','sec')
         out_nii.get_header().set_zooms(voxsize + (self.im4d.tr,))
         return out_nii
+
+    def invert_resample(self, volume, transform):
+        xyz = np.mgrid[[slice(0,k) for k in self.im4d.get_shape()[:3]]]
+        fmri_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(transform).dot(self.im4d.affine)
+        interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
+        if self.fmap != None:
+            fmap_values = map_coordinates(
+                self.fmap.get_data(),
+                interp_coords.T, order=1).reshape(xyz.shape[1:])
+            xyz = xyz.astype(np.float32)
+            #remove expected distortion in fmri
+            xyz[self.pe_dir] -= fmap_values*self.fmap_scale
+            interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
+            del fmap_values
+        out = map_coordinates(volume,interp_coords.T,order=1).reshape(xyz.shape[1:])
+        del xyz
+        return out
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
