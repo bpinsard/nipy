@@ -463,22 +463,11 @@ class RealignSliceAlgorithm(object):
             self.resample(
                 self.data[:,-n_samples_lvol:None],
                 self.slg_class_voxels[:,self._last_vol_subset_ssamp],sg[1][0])
-
-        if False:
-        #else:
-            n_samples = self._first_vol_subset_ssamp.sum() +\
-                self._subset.sum()*(sg[1][0]-sg[0][0]) +\
-                self._last_vol_subset_ssamp.sum()
-            t = np.empty()
-            """
-            t_gm = np.concatenate(
-            [self.scanner_time(self.slg_gm_vox[self._first_vol_subset_ssamp,sa],
-                               tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_gm_vox[self._subset,sa],
-                               tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(self.slg_gm_vox[self._last_vol_subset_ssamp,sa],
-                               tst[sg[1][0]])])
-            """
+        if sg[0][0]>0 and False:
+            diff = self.data[:nsamples_1vol]-self._all_data[:sg[0][0],self._first_vol_subset_ssamp].mean(0).T
+            motion = self._previous_class_voxel[:,self._first_vol_subset_ssamp] - self.slg_class_voxels[:,self._first_vol_subset_ssamp]
+            drms = np.sqrt((motion**2).sum(-1))
+            print 'diffstd %f %f'%(diff[0].std(),diff[1].std())
 
     def resample(self,out,coords,time=None):
         if not isinstance(time,np.ndarray):
@@ -711,6 +700,7 @@ class RealignSliceAlgorithm(object):
         # resample all points in slice group
         self.apply_transform(self.transforms[sg],self.class_coords,
                              self.slg_class_voxels,self.fmap_values)
+        self._previous_class_voxel = self.slg_class_voxels.copy()
         tmp = np.empty(self.class_coords.shape[:2])
         sgp = self.slice_groups[sg]
         for t in range(sgp[0][0],sgp[1][0]+1):
