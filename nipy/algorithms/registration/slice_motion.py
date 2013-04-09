@@ -558,7 +558,7 @@ class RealignSliceAlgorithm(object):
         out_nii.get_header().set_zooms(voxsize + (self.im4d.tr,))
         return out_nii
 
-    def invert_resample(self, volume, transform):
+    def invert_resample(self, volume, transform, order=1):
         xyz = np.mgrid[[slice(0,k) for k in self.im4d.get_shape()[:3]]]
         fmri_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(transform).dot(self.im4d.affine)
         interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
@@ -571,7 +571,7 @@ class RealignSliceAlgorithm(object):
             xyz[self.pe_dir] -= fmap_values*self.fmap_scale
             interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
             del fmap_values
-        out = map_coordinates(volume,interp_coords.T,order=1).reshape(xyz.shape[1:])
+        out = map_coordinates(volume,interp_coords.T,order=order).reshape(xyz.shape[1:])
         del xyz
         return out
 
