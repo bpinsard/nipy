@@ -10,6 +10,8 @@ def motion_parameter_standardize(motion_in,motion_source='spm'):
     elif motion_source == 'afni':
         return np.concatenate((motion_in[:,3:6],motion_in[:,:3]/180*np.pi),
                                 axis=1)
+    else:
+        return motion_in
 
 def regress_out_motion_parameters(nii,motion_in,mask,
                                   regressors_type = 'global',
