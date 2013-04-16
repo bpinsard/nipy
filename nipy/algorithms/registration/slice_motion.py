@@ -1,4 +1,4 @@
-# emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
+# Emacsrepl: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 
 import warnings
@@ -18,39 +18,8 @@ from ._registration import (_cspline_transform,
                             _cspline_sample3d,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
-
-def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None):
-    
-    wmdata = wmseg.get_data().astype(np.float32)
-    wmmask = (wmdata>0.5)
-    gradient = np.empty(wmdata.shape+(3,),dtype=np.float32)
-    for axis in xrange(wmdata.ndim): #convolve separable
-        order = [0]*wmdata.ndim
-        order[axis] = 1
-        gaussian_filter(wmdata,0.2,order,gradient[...,axis])
-    boundaries = wmmask - binary_erosion(wmmask)
-    # allow to remove some boundaries points as trunk for pulsatility
-    if exclude != None: 
-        boundaries[exclude] = False
-    if subsample > 1:
-        #subsample only in slice plane not in slicing axis
-        aux = np.zeros(boundaries.shape,boundaries.dtype)
-        aux[::subsample,::subsample] = boundaries[::subsample,::subsample]
-        boundaries[:] = aux
-    n_bnd_pts = np.count_nonzero(boundaries)
-    coords = np.array(np.where(boundaries)+(np.ones(n_bnd_pts,np.double),),
-                      dtype=np.double)
-    coords_mm = wmseg.get_affine().dot(coords).T
-    voxsize = np.sqrt((wmseg.get_affine()[:3,:3]**2).sum(0))
-    gradient_mm = wmseg.get_affine()[:3,:3].dot(gradient[boundaries].T).T
-    gradient_mm /= np.sqrt((gradient_mm**2).sum(-1))[:,np.newaxis]
-    
-    wmcoords = coords_mm.copy()
-    gmcoords = coords_mm.copy()
-    wmcoords[:,:3] += gradient_mm*bbr_dist #climb gradient
-    gmcoords[:,:3] -= gradient_mm*bbr_dist #go downhill
-    
-    return coords_mm,wmcoords,gmcoords
+import scipy.stats
+from scipy.ndimage.interpolation import map_coordinates
 
 
 # Module globals
@@ -70,6 +39,206 @@ REFSCAN = 0
 EXTRAPOLATE_SPACE = 'reflect'
 EXTRAPOLATE_TIME = 'nearest'
 
+# extract boundary points and tissue class points from a segmentation
+# probability map, could be improved by using the other class (gray matter)
+# but gray and csf are both brighter than white matter so it is ok
+# threshold is where to consider frontier of the class
+# margin is to remove the boundaries for which class points probabilities 
+# are too close to threshold
+def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None,
+                       threshold=.5,margin=.25):
+    
+    wmdata = wmseg.get_data().astype(np.float32)
+    wmmask = (wmdata>threshold)
+    gradient = np.empty(wmdata.shape+(3,),dtype=np.float32)
+    for axis in xrange(wmdata.ndim): #convolve separable
+        order = [0]*wmdata.ndim
+        order[axis] = 1
+        gaussian_filter(wmdata,0.2,order,gradient[...,axis])
+    boundaries = wmmask - binary_erosion(wmmask)
+    # allow to remove some boundaries points as trunk for pulsatility
+    if exclude != None: 
+        boundaries[exclude] = False
+    if subsample > 1:
+        #subsample only in slice plane not in slicing axis
+        aux = np.zeros(boundaries.shape,boundaries.dtype)
+        aux[::subsample,::subsample] = boundaries[::subsample,::subsample]
+        boundaries[:] = aux
+    n_bnd_pts = np.count_nonzero(boundaries)
+    coords = np.asarray(np.where(boundaries),dtype=np.double)
+    voxsize = np.sqrt((wmseg.get_affine()[:3,:3]**2).sum(0))
+    gradient_mm = wmseg.get_affine()[:3,:3].dot(gradient[boundaries].T).T
+    gradient_mm /= np.sqrt((gradient_mm**2).sum(-1))[:,np.newaxis]
+    
+    coords_mm = apply_affine(wmseg.get_affine(),coords.T)
+    class_coords = np.empty((2,)+coords_mm.shape)
+    class_coords[1] = coords_mm + gradient_mm*bbr_dist #climb gradient white
+    class_coords[0] = coords_mm - gradient_mm*bbr_dist #go downhill gray
+
+    # remove the points that would fall out of the aimed class
+    class_voxs = apply_affine(np.linalg.inv(wmseg.get_affine()),
+                              class_coords.reshape((-1,3)))
+    # linear interpolation to avoid negative values
+    sample_values = map_coordinates(wmseg.get_data(), class_voxs.T, order=1
+                                    ).reshape(class_coords.shape[:2])
+    valid_subset = np.logical_and(sample_values[0] < threshold+margin,
+                                  sample_values[1] > threshold-margin)
+    del class_voxs, sample_values
+    
+    return coords_mm[valid_subset],class_coords[:,valid_subset]
+
+
+def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
+    tmp = fieldmap.copy()
+    tmp[np.logical_not(mask)] = np.nan
+    sel, sel2 = [slice(None)]*3,[slice(None)]*3
+    sel[slicing_axis], sel2[slicing_axis] = slice(0,-1), slice(1,None)
+    lrgradients = np.empty((2,)+mask.shape)
+    lrgradients.fill(np.nan)
+    lrgradients[[slice(0,1)]+sel2] = tmp[sel2]-tmp[sel]
+    lrgradients[[slice(1,2)]+sel] = tmp[sel2]-tmp[sel]
+    nans = np.logical_and(np.isnan(lrgradients),mask[np.newaxis])
+    lrgradients[0,nans[0]] = lrgradients[1,nans[0]]
+    lrgradients[1,nans[1]] = lrgradients[0,nans[1]]
+    lrgradients[:,np.logical_not(mask)] = np.nan
+    if scaling != 1 :
+        lrgradients*=scaling
+    gbarte_2 = echo_time / 4.0 / np.pi
+    sinc = np.sinc(gbarte_2*lrgradients)
+    theta = np.pi * gbarte_2 * lrgradients
+    re = 0.5 * (sinc[0]*np.cos(theta[0])+sinc[1]*np.cos(theta[1]))
+    im = 0.5 * (sinc[0]*np.sin(theta[0])+sinc[1]*np.sin(theta[1]))
+    sigloss = np.sqrt(re**2+im**2).astype(fieldmap.dtype)
+    del lrgradients, nans, sinc, theta, re, im
+    sigloss[np.isnan(sigloss)]=0
+    return sigloss
+
+class SliceImage4d(object):
+    """
+    Class to represent a sequence of 3d scans (possibly acquired on a
+    slice-by-slice basis).
+
+    Object remains empty until the data array is actually loaded in memory.
+
+    Parameters
+    ----------
+      data : nd array or proxy (function that actually gets the array)
+    """
+    def __init__(self, data, affine, tr, tr_slices=None, start=0.0,
+                 slice_order=SLICE_ORDER, interleaved=INTERLEAVED,
+                 slice_trigger_times=None, slice_thickness=None,
+                 slice_info=None):
+        """
+        Configure fMRI acquisition time parameters.
+        """
+        self.affine = np.asarray(affine)
+        self.tr = float(tr)
+        self.start = float(start)
+        self.interleaved = bool(interleaved)
+
+        # guess the slice axis and direction (z-axis)
+        if slice_info == None:
+            orient = io_orientation(self.affine)
+            self.slice_axis = int(np.where(orient[:, 0] == 2)[0])
+            self.slice_direction = int(orient[self.slice_axis, 1])
+        else:
+            self.slice_axis = int(slice_info[0])
+            self.slice_direction = int(slice_info[1])
+
+        # unformatted parameters
+        self._tr_slices = tr_slices
+        self._slice_order = slice_order
+        self._slice_trigger_times = slice_trigger_times
+        self._slice_thickness = slice_thickness
+
+        self._vox_size = np.sqrt((self.affine[:3,:3]**2).sum(0))
+        if self._slice_thickness == None:
+            self._slice_thickness = self._vox_size[self.slice_axis]
+
+        if isinstance(data, np.ndarray):
+            self._data = data
+            self._shape = data.shape
+            self._get_data = None
+            self._init_timing_parameters()
+        else:
+            self._data = None
+            self._shape = None
+            self._get_data = data
+
+    def _load_data(self):
+        self._data = self._get_data()
+        self._shape = self._data.shape
+        self._init_timing_parameters()
+
+    def get_data(self):
+        if self._data == None:
+            self._load_data()
+        return self._data
+    
+    def get_shape(self):
+        if self._shape == None:
+            self._load_data()
+        return self._shape
+
+    def _init_timing_parameters(self):
+        # Number of slices
+        nslices = self.get_shape()[self.slice_axis]
+        self.nslices = nslices
+        # Default slice repetition time (no silence)
+        if self._tr_slices == None:
+            self.tr_slices = self.tr / float(nslices)
+        else:
+            self.tr_slices = float(self._tr_slices)
+        # Set slice order
+        if isinstance(self._slice_order, str):
+            if not self.interleaved:
+                aux = range(nslices)
+            else:
+                aux = range(nslices)[0::2] + range(nslices)[1::2]
+            if self._slice_order == 'descending':
+                aux.reverse()
+            self.slice_order = np.array(aux)
+        else:
+            # Verify correctness of provided slice indexes
+            provided_slices = np.array(sorted(self._slice_order))
+            if np.any(provided_slices != np.arange(nslices)):
+                raise ValueError(
+                    "Incorrect slice indexes were provided. There are %d "
+                    "slices in the volume, indexes should start from 0 and "
+                    "list all slices. "
+                    "Provided slice_order: %s" % (nslices, self._slice_order))
+            self.slice_order = np.asarray(self._slice_order)
+        if self._slice_trigger_times == None:
+            self._slice_trigger_times = np.arange(
+                0,self.tr*self._shape[3],self.tr)[:,np.newaxis].repeat(
+                nslices,axis=1)+self.slice_order[np.newaxis,:]*self.tr_slices
+
+    def z_to_slice(self, z):
+        """
+        Account for the fact that slices may be stored in reverse
+        order wrt the scanner coordinate system convention (slice 0 ==
+        bottom of the head)
+        """
+        if self.slice_direction < 0:
+            return self.nslices - 1 - z
+        else:
+            return z
+
+    def slice_to_z(self, z):
+        return self.slice_order[z]
+
+    def scanner_time(self, zv, t):
+        """
+        tv = scanner_time(zv, t)
+        zv, tv are grid coordinates; t is an actual time value.
+        """
+        corr = self.tr_slices * interp_slice_order(self.z_to_slice(zv),
+                                                   self.slice_order)
+        return (t - self.start - corr) / self.tr
+
+    def free_data(self):
+        if not self._get_data == None:
+            self._data = None
 
 class RealignSliceAlgorithm(object):
 
@@ -78,8 +247,10 @@ class RealignSliceAlgorithm(object):
                  wmseg,
                  exclude_boundaries_mask=None,
                  fmap=None,
+                 mask=None,
                  pe_dir=1,
                  echo_spacing=0.005,
+                 echo_time=0.03,
                  bbr_dist=2.0,
                  affine_class=Rigid,
                  slice_groups=None,
@@ -91,30 +262,32 @@ class RealignSliceAlgorithm(object):
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
-                 nsamples_per_slicegroup=2000,
-                 slice_thickness=3.0):
+                 nsamples_per_slicegroup=2000):
 
         self.im4d = im4d
-        self.slice_thickness=slice_thickness
         self.dims = im4d.get_data().shape
         self.nscans = 1
         if len(self.dims) > 3:
             self.nscans = self.dims[3]
         self.reference = wmseg
         self.fmap = fmap
-        self.bnd_coords,self.wmcoords,self.gmcoords = extract_boundaries(
+        self.mask = mask
+        if self.mask != None:
+            self.mask_data = self.mask.get_data()>0
+        self.bnd_coords,self.class_coords = extract_boundaries(
             wmseg,bbr_dist,1,exclude_boundaries_mask)
         self.border_nvox = self.bnd_coords.shape[0]
         self.min_sample_number = 100
 
-        self.slg_gm_vox = np.empty(self.gmcoords.shape,np.double)
-        self.slg_wm_vox = np.empty(self.wmcoords.shape,np.double)
+        self.slg_class_voxels = np.empty(self.class_coords.shape,np.double)
 
+        self.echo_time = echo_time
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
         self.pe_sign = int(pe_dir > 0)*2-1
         self.pe_dir = abs(pe_dir)
         self.fmap_scale=self.pe_sign*echo_spacing*self.dims[self.pe_dir]/2.0/np.pi
         self.affine_class = affine_class
+
 
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
@@ -133,22 +306,32 @@ class RealignSliceAlgorithm(object):
 
         self.scanner_time = im4d.scanner_time
         self.timestamps = im4d.tr * np.arange(self.nscans)
+        self.st_ratio = self.im4d._slice_thickness/self.im4d._vox_size[im4d.slice_axis]/2.0
 
+        # Compute the 3d cubic spline transform
+        self.cbspline = np.zeros(self.dims, dtype='double')
+        for t in range(self.dims[3]):
+            self.cbspline[:, :, :, t] =\
+                _cspline_transform(im4d.get_data()[:, :, :, t])
         # Compute the 4d cubic spline transform
-        self.cbspline = _cspline_transform(im4d.get_data())
+#        self.cbspline = _cspline_transform(im4d.get_data())
 
         if self.fmap != None:
-            self._fmap_spline = _cspline_transform(self.fmap.get_data())
+            self.sigloss = fieldmap_to_sigloss(
+                self.fmap.get_data(),self.mask.get_data(),
+                self.echo_time,self.im4d.slice_axis)
             fmap_inv_aff = np.linalg.inv(self.fmap.get_affine())
-            fmap_wmvox = np.dot(fmap_inv_aff,self.wmcoords.T)
-            fmap_gmvox = np.dot(fmap_inv_aff,self.gmcoords.T)
-            self.wm_fmap_values = np.empty(fmap_wmvox.shape[1])
-            self.gm_fmap_values = np.empty(fmap_gmvox.shape[1])
-            _cspline_sample3d(
-                self.wm_fmap_values,self._fmap_spline, *fmap_wmvox[:3])
-            _cspline_sample3d(
-                self.gm_fmap_values,self._fmap_spline, *fmap_gmvox[:3])
-
+            fmap_vox = apply_affine(fmap_inv_aff,
+                                    self.class_coords.reshape(-1,3))
+            self.fmap_values = map_coordinates(
+                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)
+            self.sigloss_values = map_coordinates(
+                self.sigloss, fmap_vox.T, order=1).reshape(2,self.border_nvox)
+            del fmap_vox
+        else:
+            self.fmap_values = None
+            self.sigloss_values = None
+            
         # Set the minimization method
         self.set_fmin(optimizer, stepsize,
                       xtol=xtol,
@@ -156,18 +339,34 @@ class RealignSliceAlgorithm(object):
                       gtol=gtol,
                       maxiter=maxiter,
                       maxfun=maxfun)
-
+        
         self.data = np.array([[]])
         self._pc = None
         self._last_subsampling_transform = affine_class(np.ones(12)*5)
-        self._subset = slice(0,None)
+        self._subset = np.ones(self.border_nvox,dtype=np.bool)
+        self._subsamp = np.ones(self.border_nvox,dtype=np.bool)
         self._first_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
         self._last_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
-        
-    def resample(self, sgi):
+        self._first_vol_subset_ssamp=np.zeros(self.border_nvox, dtype=np.bool)
+        self._last_vol_subset_ssamp=np.zeros(self.border_nvox, dtype=np.bool)
+
+        # store all data for more complex energy function with intensity prior
+        self._all_data = np.zeros((self.nscans,self.border_nvox,2),np.float32)+np.nan
+        self._allcosts=list()
+
+    def apply_transform(self,transform,in_coords,out_coords,
+                        fmap_values=None,subset=slice(None)):
+        inv_trans = np.linalg.inv(transform.as_affine())
+        ref2fmri = np.dot(self.inv_affine,inv_trans)
+        #apply current slice group transform
+        out_coords[...,subset,:]=apply_affine(ref2fmri,in_coords[...,subset,:])
+        #add shift in phase encoding direction
+        if fmap_values != None:
+            out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*self.fmap_scale
+            
+    def resample_slice_group(self, sgi):
         """
-        Resample a particular slice group on the (sub-sampled) working
-        grid.
+        Resample a particular slice group on the (sub-sampled) working grid.
         """
         tst = self.timestamps
         sa = self.im4d.slice_axis
@@ -175,139 +374,148 @@ class RealignSliceAlgorithm(object):
 
         inv_trans = np.linalg.inv(self.transforms[sgi].as_affine())
         ref2fmri = np.dot(self.inv_affine,inv_trans)
-
+        
         # if change of test points z is above threshold recompute subset
-        test_points=np.array([[0,0,sg[0][1]],[0,0,sg[1][1]]])
+        test_points = np.array([[0,0,sg[0][1]],[0,0,sg[1][1]]])
         recompute_subset = np.abs(
             self._last_subsampling_transform.apply(test_points)-
             self.transforms[sgi].apply(test_points))[:,sa].max() > 0.1
+        
         if recompute_subset:
-            print 'recompute subset',np.abs(
-                self._last_subsampling_transform.apply(test_points)-
-            self.transforms[sgi].apply(test_points))[:,sa].max()
-            self._subset = slice(0,None)
-        self.slg_gm_vox[self._subset]=np.dot(self.gmcoords[self._subset],
-                                             ref2fmri.T)
-        self.slg_wm_vox[self._subset]=np.dot(self.wmcoords[self._subset],
-                                             ref2fmri.T)
-        #add shift in phase encoding direction
-        if self.fmap != None:
-            self.slg_gm_vox[self._subset,self.pe_dir]+=self.gm_fmap_values[self._subset]*self.fmap_scale
-            self.slg_wm_vox[self._subset,self.pe_dir]+=self.wm_fmap_values[self._subset]*self.fmap_scale
+            self.apply_transform(self.transforms[sgi],
+                                 self.class_coords,self.slg_class_voxels,
+                                 self.fmap_values)
 
-        if recompute_subset:
             self._last_subsampling_transform = self.transforms[sgi].copy()
             # adapt subsampling to keep regular amount of points in each slice
             nslices = self.dims[sa]
-            zs = (self.slg_gm_vox[:,sa]+self.slg_wm_vox[:,sa])/2.
-            samples_slice_hist = np.histogram(zs,np.arange(nslices+1)-0.5)
-
+            zs = self.slg_class_voxels[...,sa].sum(0)/2.
+            samples_slice_hist = np.histogram(zs,np.arange(nslices+1)-self.st_ratio)
+            # this computation is wrong 
+            self._subsamp[:] = False
+            """
             maxsamp_per_slice = self.nsamples_per_slicegroup/nslices
-            self._subset = np.zeros(self.border_nvox, dtype=np.bool)
             for sl,nsamp in enumerate(samples_slice_hist[0]):
                 stp = max(int(nsamp/maxsamp_per_slice),1)
                 tmp = np.where(np.abs(zs-sl)<0.5)[0]
                 if tmp.size > 0:
-                    self._subset[tmp[::stp]] = True
+                    self._subsamp[tmp[::stp]] = True
+                    """
+            step = np.floor(self._subsamp.shape[0]/float(self.nsamples_per_slicegroup))
+            self._subsamp[::step] = True
 
-            np.logical_and(zs>sg[0][1]-0.5,self._subset,self._first_vol_subset)
-            np.logical_and(zs<sg[1][1]+0.5,self._subset,self._last_vol_subset)
+            self._first_vol_subset[:] = (np.abs(zs[:,np.newaxis]-self.im4d.slice_to_z(np.arange(sg[0][1],nslices))[np.newaxis]) < self.st_ratio).sum(1) > 0
+            self._last_vol_subset[:] = (np.abs(zs[:,np.newaxis]-self.im4d.slice_to_z(np.arange(0,sg[1][1]))[np.newaxis]) < self.st_ratio).sum(1) > 0
+
+
             if sg[0][0] == sg[1][0]:
-                np.logical_and(self._last_vol_subset,self._first_vol_subset,
+                np.logical_and(self._last_vol_subset,
+                               self._first_vol_subset,
                                self._first_vol_subset)
+                np.logical_and(self._first_vol_subset,self._subsamp,
+                               self._first_vol_subset_ssamp)
+                self._last_vol_subset_ssamp.fill(False)
                 self._last_vol_subset.fill(False)
                 self._subset[:] = self._first_vol_subset[:]
+                np.logical_and(self._subset, self._subsamp, self._subsamp)
+            else:
+                np.logical_and(self._last_vol_subset,self._subsamp,
+                               self._last_vol_subset_ssamp)
+                if sg[1][0] - sg[0][0] > 1:
+                    self._subset.fill(True)
+                else:
+                    np.logical_and(self._first_vol_subset, self._subsamp, self._subsamp)
+                    np.logical_and(self._last_vol_subset, self._subsamp, self._subsamp)
+                
+            print 'new subset %d samples'%self._subsamp.sum()
+
+        else:
+            self.apply_transform(self.transforms[sgi],
+                                 self.class_coords,self.slg_class_voxels,
+                                 self.fmap_values,self._subsamp)
+        nsamples_1vol = np.count_nonzero(self._first_vol_subset_ssamp)
+
+        n_samples = np.count_nonzero(self._subsamp)
+        n_samples_lvol = np.count_nonzero(self._last_vol_subset_ssamp)
+        n_samples_total = nsamples_1vol + n_samples_lvol +\
+            n_samples * max( sg[1][0]-sg[0][0]-1, 0)
+
         self.skip_sg=False
-        if np.count_nonzero(self._first_vol_subset) < self.min_sample_number:
-            print 'skipping slice group, no enough boundaries samples'
+        if n_samples_total < self.min_sample_number:
+            print 'skipping slice group, only %d samples'%n_samples_total
             self.skip_sg = True
             return
-        
-        """
-        t_gm = np.concatenate(
-            [self.scanner_time(self.slg_gm_vox[self._first_vol_subset,sa],
-                               tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_gm_vox[self._subset,sa],
-                               tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(self.slg_gm_vox[self._last_vol_subset,sa],
-                               tst[sg[1][0]])])
+            
+        # if subsampling changes
+        if self.data.shape[1] != n_samples_total:
+            del self.data
+            self.data = np.empty((2,n_samples_total))
 
-        t_wm = np.concatenate(
-            [self.scanner_time(self.slg_wm_vox[self._first_vol_subset,sa],
-                               tst[sg[0][0]])]+
-            [self.scanner_time(self.slg_wm_vox[self._subset,sa],
-                               tst[t]) for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [self.scanner_time(self.slg_wm_vox[self._last_vol_subset,sa],
-                               tst[sg[1][0]])])
-                               """
-        t_gm = np.concatenate(
-            [np.ones(self._first_vol_subset.sum())*sg[0][0]]+
-            [np.ones(self._subset.sum())*t for t in xrange(sg[0][0]+1,sg[1][0])]+
-            [np.ones(self._last_vol_subset.sum())*sg[1][0]])
-        t_wm = t_gm
+        # resample per volume, split not optimal for many volumes ???
+        self.resample(
+            self.data[:,:nsamples_1vol],
+            self.slg_class_voxels[:,self._first_vol_subset_ssamp],sg[0][0])
+        for i in range(sg[0][0]+1, sg[1][0]):
+            seek = nsamples_1vol + n_samples * (i - sg[0][0] -1)
+            self.resample(self.data[:,seek:seek+n_samples],
+                          self.slg_class_voxels[:,self._subsamp],i)
+        if sg[0][0] < sg[1][0] and n_samples_lvol > 0:
+            self.resample(
+                self.data[:,-n_samples_lvol:None],
+                self.slg_class_voxels[:,self._last_vol_subset_ssamp],sg[1][0])
+        if sg[0][0]>0 and False:
+            diff = self.data[:nsamples_1vol]-self._all_data[:sg[0][0],self._first_vol_subset_ssamp].mean(0).T
+            motion = self._previous_class_voxel[:,self._first_vol_subset_ssamp] - self.slg_class_voxels[:,self._first_vol_subset_ssamp]
+            drms = np.sqrt((motion**2).sum(-1))
+            print 'diffstd %f %f'%(diff[0].std(),diff[1].std())
 
-        tmp_slg_gm_vox = np.concatenate((
-                self.slg_gm_vox[self._first_vol_subset],
-                self.slg_gm_vox.repeat(sg[1][0]-sg[0][0],0),
-                self.slg_gm_vox[self._last_vol_subset]))
-
-        tmp_slg_wm_vox = np.concatenate((
-                self.slg_wm_vox[self._first_vol_subset],
-                self.slg_wm_vox.repeat(sg[1][0]-sg[0][0],0),
-                self.slg_wm_vox[self._last_vol_subset]))
-
-        if self.data.shape[1] != t_gm.shape[0]:
-            self.data = np.empty((2,t_gm.shape[0]))
-
-        # caution extrapolation requires minimum amount of points in each dimension including time !!!! otherwise returns 0 for data and causes NaNs
-        if len(self.cbspline.shape)<4:
+    def resample(self,out,coords,time=None):
+        if not isinstance(time,np.ndarray):
             _cspline_sample3d(
-                self.data[0],self.cbspline,
-                tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],
+                out,self.cbspline[...,time],
+                coords[...,0], coords[...,1], coords[...,2],
                 mx=EXTRAPOLATE_SPACE,
                 my=EXTRAPOLATE_SPACE,
                 mz=EXTRAPOLATE_SPACE,)
-            _cspline_sample3d(
-                self.data[1],self.cbspline,
-                tmp_slg_wm_vox[:,0], tmp_slg_wm_vox[:,1], tmp_slg_wm_vox[:,2],
+        else:
+            _cspline_sample4d(
+                out,self.cbspline,
+                coords[...,0], coords[...,1], coords[...,2], time,
                 mx=EXTRAPOLATE_SPACE,
                 my=EXTRAPOLATE_SPACE,
-                mz=EXTRAPOLATE_SPACE)
-            return 
-        _cspline_sample4d(
-            self.data[0],self.cbspline,
-            tmp_slg_gm_vox[:,0], tmp_slg_gm_vox[:,1], tmp_slg_gm_vox[:,2],t_gm,
-            mx=EXTRAPOLATE_SPACE,
-            my=EXTRAPOLATE_SPACE,
-            mz=EXTRAPOLATE_SPACE,
-            mt=EXTRAPOLATE_TIME)
-        _cspline_sample4d(
-            self.data[1],self.cbspline,
-            tmp_slg_wm_vox[:,0], tmp_slg_wm_vox[:,1], tmp_slg_wm_vox[:,2],t_wm,
-            mx=EXTRAPOLATE_SPACE,
-            my=EXTRAPOLATE_SPACE,
-            mz=EXTRAPOLATE_SPACE,
-            mt=EXTRAPOLATE_TIME)
+                mz=EXTRAPOLATE_SPACE,
+                mt=EXTRAPOLATE_TIME)
 
-    def resample_full_data(self, voxsize=None):
+    def resample_full_data(self, voxsize=None, reference=None):
         # TODO, time interpolation, slice group, ...
         if VERBOSE:
             print('Gridding...')
         mat=self.reference.get_affine()
         shape = self.reference.shape
-        if voxsize!=None:
+        if reference != None:
+            mat,shape = reference.get_affine(),reference.shape
+            voxsize = reference.get_header().get_zooms()[:3]
+        elif voxsize!=None:
             mat,shape=resample_mat_shape(self.reference.get_affine(),
-                                         self.reference.shape,
-                                         voxsize)
-        xyz=np.squeeze(np.mgrid[[slice(0,s) for s in shape]+[slice(1,2)]])
-        interp_coords = np.empty((3,)+xyz.shape[1:])
+                                         self.reference.shape,voxsize)
+        new_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(mat)
+        xyz = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]],0,4)
+        interp_coords = apply_affine(new_to_t1,xyz)
         res = np.zeros(shape+(self.nscans,), dtype=np.float32)
-        tmp = np.zeros(shape)
+        if self.mask != None:
+            mask = map_coordinates(self.mask.get_data(),
+                                   interp_coords.reshape(-1,3).T,
+                                   order=0).reshape(shape)
+            mask = mask>.5
+            xyz = xyz[mask]
+            interp_coords = interp_coords[mask]
+        tmp = np.zeros(xyz.shape[:-1])
         sa = self.im4d.slice_axis
         subset = np.zeros(shape,dtype=np.bool)
-        if self.fmap !=None:
-            fmap_values = np.empty(shape)
-            _cspline_sample3d(fmap_values,self._fmap_spline,*xyz[:3])
+        if self.fmap != None:
+            fmap_values = map_coordinates(self.fmap.get_data(),
+                                          interp_coords.reshape(-1,3).T,
+                                          order=1).reshape(xyz.shape[:-1])
             fmap_values *= self.fmap_scale
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
                                                     fmap_values.min())
@@ -315,36 +523,57 @@ class RealignSliceAlgorithm(object):
             sgs_trs = [(sg,trans) for sg,trans in zip(self.slice_groups,self.transforms) if sg[0][0]<=t and t<= sg[1][0]]
             if len(sgs_trs)==1: #trivial case
                 print 'easy peasy'
-                interp_coords[...] = np.dot(
-                    np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                    mat).dot(xyz.transpose(1,2,0,3))[:3]
+                interp_coords[...] = apply_affine(self.inv_affine.dot(
+                        np.linalg.inv(trans.as_affine())).dot(mat),xyz)
                 if self.fmap != None:
-                    interp_coords[self.pe_dir] += fmap_values
+                    interp_coords[...,self.pe_dir] += fmap_values
             else: # we have to solve from which transform we sample
                 print 'more tricky'
                 for sg,trans in sgs_trs:
-                    coords = np.dot(
-                      np.dot(self.inv_affine,np.linalg.inv(trans.as_affine())),
-                      mat).dot(xyz.transpose(1,2,0,3))
+                    coords = apply_affine(self.inv_affine.dot(
+                            np.linalg.inv(trans.as_affine())).dot(mat), xyz)
                     if self.fmap != None:
-                        coords[self.pe_dir] += fmap_values
+                        coords[...,self.pe_dir] += fmap_values
                     subset.fill(False)
-                    if sg[0][0]==t:
-                        subset[:] = coords[sa] >= (sg[0][1]-0.5)
-                    if sg[1][0]==t:
-                        np.logical_and(coords[sa] <= (sg[1][1]+0.5),
-                                       subset,subset)
-                    interp_coords[:,subset] = coords[:3,subset]
-            T = self.scanner_time(interp_coords[sa],self.timestamps[t])
-            if len(self.cbspline.shape)<4:
-                _cspline_sample3d(tmp,self.cbspline,*interp_coords[:3])
+                    
+                    if sg[0][0]==t and sg[1][0]==t:
+                        times = np.arange(sg[0][1],sg[1][1])
+                    elif sg[0][0]==t:
+                        times = np.arange(sg[0][1],nslices)
+                    elif sg[1][0]==t:
+                        times = np.arange(sg[0][1],nslices)
+                    else:
+                        times = np.arange(0,nslices)
+                    subset = (np.abs(coords[...,sa,np.newaxis]-self.im4d.slice_to_z(times)[np.newaxis]) < self.st_ratio+.1).sum(-1) > 0
+                        
+                    interp_coords[subset,:] = coords[subset]
+            self.resample(tmp,interp_coords,t)
+            if self.mask !=None:
+                res[mask,t] = tmp
             else:
-                _cspline_sample4d(tmp,self.cbspline,
-                                  *interp_coords[:3],T=T,
-                                  mt=EXTRAPOLATE_TIME)
-            res[...,t] = tmp
+                res[...,t] = tmp
             print t
-        return nb.Nifti1Image(res,mat)
+        out_nii = nb.Nifti1Image(res,mat)
+        out_nii.get_header().set_xyzt_units('mm','sec')
+        out_nii.get_header().set_zooms(voxsize + (self.im4d.tr,))
+        return out_nii
+
+    def invert_resample(self, volume, transform, order=1):
+        xyz = np.mgrid[[slice(0,k) for k in self.im4d.get_shape()[:3]]]
+        fmri_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(transform).dot(self.im4d.affine)
+        interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
+        if self.fmap != None:
+            fmap_values = map_coordinates(
+                self.fmap.get_data(),
+                interp_coords.T, order=1).reshape(xyz.shape[1:])
+            xyz = xyz.astype(np.float32)
+            #remove expected distortion in fmri
+            xyz[self.pe_dir] -= fmap_values*self.fmap_scale
+            interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
+            del fmap_values
+        out = map_coordinates(volume,interp_coords.T,order=order).reshape(xyz.shape[1:])
+        del xyz
+        return out
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
@@ -363,7 +592,7 @@ class RealignSliceAlgorithm(object):
 
     def set_transform(self, t, pc):
         self.transforms[t].param = pc
-        self.resample(t)
+        self.resample_slice_group(t)
 
     def _init_energy(self, pc):
         if pc is self._pc:
@@ -427,7 +656,7 @@ class RealignSliceAlgorithm(object):
             else:
                 self.transforms.append(self.affine_class())
         self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
-        self.resample(sg)
+        self.resample_slice_group(sg)
 
         self.set_transform(sg,self.transforms[sg].param)
         if self.skip_sg:
@@ -436,8 +665,7 @@ class RealignSliceAlgorithm(object):
         def f(pc):
             self._init_energy(pc)
             nrgy = self._energy()
-            print 'f %f : %f %f %f %f %f %f | %d samples'%tuple(
-                [nrgy] + pc.tolist() + [self.data.shape[1]])
+            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
             return nrgy
 
         def fprime(pc):
@@ -468,6 +696,25 @@ class RealignSliceAlgorithm(object):
 #        try:
         pc = fmin(f, self.transforms[sg].param, *args, **kwargs)
         self.set_transform(sg, pc)
+
+        # resample all points in slice group
+        self.apply_transform(self.transforms[sg],self.class_coords,
+                             self.slg_class_voxels,self.fmap_values)
+        self._previous_class_voxel = self.slg_class_voxels.copy()
+        tmp = np.empty(self.class_coords.shape[:2])
+        sgp = self.slice_groups[sg]
+        for t in range(sgp[0][0],sgp[1][0]+1):
+            sbst=self._subset
+            nsamp = sbst.sum(0)
+            if t==sgp[0][0]:
+                sbst = self._first_vol_subset
+                nsamp=sbst.sum(0)
+            elif t==sgp[1][0]:
+                sbst = self._last_vol_subset
+                nsamp=sbst.sum(0)
+            self.resample(
+                tmp[:,:nsamp],self.slg_class_voxels[:,sbst],sgp[0][0])
+            self._all_data[sgp[0][0],sbst,:] = tmp[:,:nsamp].T
         #except:
         #warnings.warn('Minimization failed')
 
