@@ -743,3 +743,11 @@ def resample_mat_shape(mat,shape,voxsize):
     newmat[:3,3] = mat[:3,3]+res/2
     newshape = np.abs(newshape).astype(np.int32)
     return newmat,tuple(newshape.tolist())
+
+
+def intensity_sd_heuristic(im4d,mask):
+    # return split of run in slice and also stable vs. motion slices
+    slice_std = np.diff(im4d.get_data(),1,-1).reshape(
+        (-1,)+im4d.get_shape()[2:]).std(0)
+    runstd=slice_std[im4d.slice_order].T.ravel()
+    
