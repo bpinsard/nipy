@@ -747,7 +747,12 @@ def resample_mat_shape(mat,shape,voxsize):
 
 def intensity_sd_heuristic(im4d,mask):
     # return split of run in slice and also stable vs. motion slices
-    slice_std = np.diff(im4d.get_data(),1,-1).reshape(
-        (-1,)+im4d.get_shape()[2:]).std(0)
-    runstd=slice_std[im4d.slice_order].T.ravel()
+    ddata = np.diff(im4d.get_data().reshape((-1,)+im4d.get_shape()[2:]),1,-1)
+    slice_std = ddata.std(0)
+    global_std = ddata.std()
+    peaks = slice_std > 1.96*global_std
+    timepeaks = peaks[im4d.slice_order]
+    np.where(np.logical_not(timepeaks))[0]
+
+    return runstd
     
