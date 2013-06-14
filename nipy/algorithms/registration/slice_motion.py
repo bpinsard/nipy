@@ -756,3 +756,18 @@ def intensity_sd_heuristic(im4d,mask):
 
     return runstd
     
+
+def vertices_normals(vertices,triangles):
+    norm = np.zeros(vertices.shape,dtype=vertices.dtype)
+    tris = vertices[triangles]
+    n = np.cross(tris[::,1 ]-tris[::,0], tris[::,2 ]-tris[::,0])
+    n /= np.sqrt((n**2).sum(-1))[:,np.newaxis]
+    norm[triangles.ravel()] += n.repeat(3,0)
+    norm /= np.sqrt((norm**2).sum(-1))[:,np.newaxis]
+    return norm
+    
+def surface_to_samples(vertices, triangles,bbr_dist):
+    normals = vertices_normals(vertices,triangles)
+    wm_coords = vertices - normals*bbr_dist
+    gm_coords = vertices + normals*bbr_dist
+    return wm_coords, gm_coords
