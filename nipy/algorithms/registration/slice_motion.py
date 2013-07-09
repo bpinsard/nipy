@@ -244,14 +244,17 @@ class RealignSliceAlgorithm(object):
 
     def __init__(self,
                  im4d,
-                 wmseg,
-                 exclude_boundaries_mask=None,
+                 bnd_coords,
+                 class_coords,
+                 reference,
+#                 wmseg,
+#                 exclude_boundaries_mask=None,
                  fmap=None,
                  mask=None,
                  pe_dir=1,
                  echo_spacing=0.005,
                  echo_time=0.03,
-                 bbr_dist=2.0,
+#                 bbr_dist=2.0,
                  affine_class=Rigid,
                  slice_groups=None,
                  transforms=None,
@@ -269,13 +272,12 @@ class RealignSliceAlgorithm(object):
         self.nscans = 1
         if len(self.dims) > 3:
             self.nscans = self.dims[3]
-        self.reference = wmseg
+        self.reference = reference
         self.fmap = fmap
         self.mask = mask
         if self.mask != None:
             self.mask_data = self.mask.get_data()>0
-        self.bnd_coords,self.class_coords = extract_boundaries(
-            wmseg,bbr_dist,1,exclude_boundaries_mask)
+        self.bnd_coords,self.class_coords = bnd_coords, class_coords
         self.border_nvox = self.bnd_coords.shape[0]
         self.min_sample_number = 100
 
@@ -490,8 +492,6 @@ class RealignSliceAlgorithm(object):
         # TODO, time interpolation, slice group, ...
         if VERBOSE:
             print('Gridding...')
-        mat=self.reference.get_affine()
-        shape = self.reference.shape
         if reference != None:
             mat,shape = reference.get_affine(),reference.shape
             voxsize = reference.get_header().get_zooms()[:3]
@@ -766,8 +766,9 @@ def vertices_normals(vertices,triangles):
     norm /= np.sqrt((norm**2).sum(-1))[:,np.newaxis]
     return norm
     
-def surface_to_samples(vertices, triangles,bbr_dist):
+def surface_to_samples(vertices, triangles, bbr_dist):
     normals = vertices_normals(vertices,triangles)
-    wm_coords = vertices - normals*bbr_dist
-    gm_coords = vertices + normals*bbr_dist
-    return wm_coords, gm_coords
+    class_coords = np.empty((2,)+vertices.shape)
+    class_coords[0] = vertices + normals*bbr_dist
+    class_coords[1] = vertices - normals*bbr_dist
+    return class_coords
