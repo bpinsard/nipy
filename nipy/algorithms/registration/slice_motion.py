@@ -771,3 +771,10 @@ def surface_to_samples(vertices, triangles, bbr_dist):
     class_coords[0] = vertices + normals*bbr_dist
     class_coords[1] = vertices - normals*bbr_dist
     return class_coords
+
+def vox2ras_tkreg(voldim, voxres):
+    return np.array([
+            [-voxres[0], 0, 0, voxres[0]*voldim[0]/2],
+            [0, 0, voxres[2], -voxres[2]*voldim[2]/2],
+            [0,-voxres[1],0,voxres[1]*voldim[1]/2],
+            [0,0,0,1]])
