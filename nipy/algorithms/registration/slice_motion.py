@@ -244,14 +244,17 @@ class RealignSliceAlgorithm(object):
 
     def __init__(self,
                  im4d,
-                 wmseg,
-                 exclude_boundaries_mask=None,
+                 bnd_coords,
+                 class_coords,
+                 reference,
+#                 wmseg,
+#                 exclude_boundaries_mask=None,
                  fmap=None,
                  mask=None,
                  pe_dir=1,
                  echo_spacing=0.005,
                  echo_time=0.03,
-                 bbr_dist=2.0,
+#                 bbr_dist=2.0,
                  affine_class=Rigid,
                  slice_groups=None,
                  transforms=None,
@@ -269,13 +272,12 @@ class RealignSliceAlgorithm(object):
         self.nscans = 1
         if len(self.dims) > 3:
             self.nscans = self.dims[3]
-        self.reference = wmseg
+        self.reference = reference
         self.fmap = fmap
         self.mask = mask
         if self.mask != None:
             self.mask_data = self.mask.get_data()>0
-        self.bnd_coords,self.class_coords = extract_boundaries(
-            wmseg,bbr_dist,1,exclude_boundaries_mask)
+        self.bnd_coords,self.class_coords = bnd_coords, class_coords
         self.border_nvox = self.bnd_coords.shape[0]
         self.min_sample_number = 100
 
@@ -324,7 +326,7 @@ class RealignSliceAlgorithm(object):
             fmap_vox = apply_affine(fmap_inv_aff,
                                     self.class_coords.reshape(-1,3))
             self.fmap_values = map_coordinates(
-                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)
+                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)*self.fmap_scale
             self.sigloss_values = map_coordinates(
                 self.sigloss, fmap_vox.T, order=1).reshape(2,self.border_nvox)
             del fmap_vox
@@ -362,7 +364,7 @@ class RealignSliceAlgorithm(object):
         out_coords[...,subset,:]=apply_affine(ref2fmri,in_coords[...,subset,:])
         #add shift in phase encoding direction
         if fmap_values != None:
-            out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*self.fmap_scale
+            out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]
             
     def resample_slice_group(self, sgi):
         """
@@ -490,8 +492,6 @@ class RealignSliceAlgorithm(object):
         # TODO, time interpolation, slice group, ...
         if VERBOSE:
             print('Gridding...')
-        mat=self.reference.get_affine()
-        shape = self.reference.shape
         if reference != None:
             mat,shape = reference.get_affine(),reference.shape
             voxsize = reference.get_header().get_zooms()[:3]
@@ -516,7 +516,6 @@ class RealignSliceAlgorithm(object):
             fmap_values = map_coordinates(self.fmap.get_data(),
                                           interp_coords.reshape(-1,3).T,
                                           order=1).reshape(xyz.shape[:-1])
-            fmap_values *= self.fmap_scale
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
                                                     fmap_values.min())
         for t in range(self.nscans):
@@ -568,7 +567,7 @@ class RealignSliceAlgorithm(object):
                 interp_coords.T, order=1).reshape(xyz.shape[1:])
             xyz = xyz.astype(np.float32)
             #remove expected distortion in fmri
-            xyz[self.pe_dir] -= fmap_values*self.fmap_scale
+            xyz[self.pe_dir] -= fmap_values
             interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
             del fmap_values
         out = map_coordinates(volume,interp_coords.T,order=order).reshape(xyz.shape[1:])
@@ -756,3 +755,19 @@ def intensity_sd_heuristic(im4d,mask):
 
     return runstd
     
+
+def vertices_normals(vertices,triangles):
+    norm = np.zeros(vertices.shape,dtype=vertices.dtype)
+    tris = vertices[triangles]
+    n = np.cross(tris[::,1 ]-tris[::,0], tris[::,2 ]-tris[::,0])
+    n /= np.sqrt((n**2).sum(-1))[:,np.newaxis]
+    norm[triangles.ravel()] += n.repeat(3,0)
+    norm /= np.sqrt((norm**2).sum(-1))[:,np.newaxis]
+    return norm
+    
+def surface_to_samples(vertices, triangles, bbr_dist):
+    normals = vertices_normals(vertices,triangles)
+    class_coords = np.empty((2,)+vertices.shape)
+    class_coords[0] = vertices + normals*bbr_dist
+    class_coords[1] = vertices - normals*bbr_dist
+    return class_coords
