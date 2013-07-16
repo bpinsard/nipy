@@ -513,9 +513,10 @@ class RealignSliceAlgorithm(object):
         sa = self.im4d.slice_axis
         subset = np.zeros(shape,dtype=np.bool)
         if self.fmap != None:
-            fmap_values = map_coordinates(self.fmap.get_data(),
-                                          interp_coords.reshape(-1,3).T,
-                                          order=1).reshape(xyz.shape[:-1])
+            fmap_values = self.fmap_scale * \
+                map_coordinates(self.fmap.get_data(),
+                                interp_coords.reshape(-1,3).T,
+                                order=1).reshape(xyz.shape[:-1])
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
                                                     fmap_values.min())
         for t in range(self.nscans):
@@ -733,15 +734,14 @@ class RealignSliceAlgorithm(object):
 
 
 def resample_mat_shape(mat,shape,voxsize):
-    k=np.diag(mat[:3,:3].dot(np.diag(np.array(shape)-1.0)))
+    old_voxsize = np.sqrt((mat[:3,:3]**2).sum(0))
+    k = old_voxsize*np.array(shape)
     newshape = np.round(k/voxsize)
     res = k-newshape*voxsize
-    old_voxsize=np.sqrt((mat[:3,:3]**2).sum(0))
-    newmat=np.eye(4)
+    newmat = np.eye(4)
     newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
-    newmat[:3,3] = mat[:3,3]+res/2
-    newshape = np.abs(newshape).astype(np.int32)
-    return newmat,tuple(newshape.tolist())
+    newmat[:3,3] = mat[:3,3]+newmat[:3,:3].dot(res/voxsize/2)
+    return newmat,tuple(newshape.astype(np.int32).tolist())
 
 
 def intensity_sd_heuristic(im4d,mask):
