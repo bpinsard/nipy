@@ -326,7 +326,7 @@ class RealignSliceAlgorithm(object):
             fmap_vox = apply_affine(fmap_inv_aff,
                                     self.class_coords.reshape(-1,3))
             self.fmap_values = map_coordinates(
-                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)
+                self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)*self.fmap_scale
             self.sigloss_values = map_coordinates(
                 self.sigloss, fmap_vox.T, order=1).reshape(2,self.border_nvox)
             del fmap_vox
@@ -364,7 +364,7 @@ class RealignSliceAlgorithm(object):
         out_coords[...,subset,:]=apply_affine(ref2fmri,in_coords[...,subset,:])
         #add shift in phase encoding direction
         if fmap_values != None:
-            out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*self.fmap_scale
+            out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]
             
     def resample_slice_group(self, sgi):
         """
@@ -516,7 +516,6 @@ class RealignSliceAlgorithm(object):
             fmap_values = map_coordinates(self.fmap.get_data(),
                                           interp_coords.reshape(-1,3).T,
                                           order=1).reshape(xyz.shape[:-1])
-            fmap_values *= self.fmap_scale
             print 'fieldmap ranging from %f to %f'%(fmap_values.max(),
                                                     fmap_values.min())
         for t in range(self.nscans):
@@ -568,7 +567,7 @@ class RealignSliceAlgorithm(object):
                 interp_coords.T, order=1).reshape(xyz.shape[1:])
             xyz = xyz.astype(np.float32)
             #remove expected distortion in fmri
-            xyz[self.pe_dir] -= fmap_values*self.fmap_scale
+            xyz[self.pe_dir] -= fmap_values
             interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
             del fmap_values
         out = map_coordinates(volume,interp_coords.T,order=order).reshape(xyz.shape[1:])
