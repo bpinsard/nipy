@@ -493,8 +493,10 @@ class RealignSliceAlgorithm(object):
         if VERBOSE:
             print('Gridding...')
         if reference != None:
-            mat,shape = reference.get_affine(),reference.shape
-            voxsize = reference.get_header().get_zooms()[:3]
+            if voxsize == None:
+                voxsize = reference.get_header().get_zooms()[:3]
+            mat,shape = resample_mat_shape(
+                reference.get_affine(),reference.shape, voxsize)
         elif voxsize!=None:
             mat,shape=resample_mat_shape(self.reference.get_affine(),
                                          self.reference.shape,voxsize)
