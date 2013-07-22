@@ -93,25 +93,64 @@ def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
     tmp[np.logical_not(mask)] = np.nan
     sel, sel2 = [slice(None)]*3,[slice(None)]*3
     sel[slicing_axis], sel2[slicing_axis] = slice(0,-1), slice(1,None)
-    lrgradients = np.empty((2,)+mask.shape)
+    lrgradients = np.empty(mask.shape+(2,))
     lrgradients.fill(np.nan)
-    lrgradients[[slice(0,1)]+sel2] = tmp[sel2]-tmp[sel]
-    lrgradients[[slice(1,2)]+sel] = tmp[sel2]-tmp[sel]
-    nans = np.logical_and(np.isnan(lrgradients),mask[np.newaxis])
-    lrgradients[0,nans[0]] = lrgradients[1,nans[0]]
-    lrgradients[1,nans[1]] = lrgradients[0,nans[1]]
-    lrgradients[:,np.logical_not(mask)] = np.nan
+    lrgradients[sel2+[slice(0,1)]] = tmp[sel2]-tmp[sel]
+    lrgradients[sel+[slice(1,2)]] = tmp[sel2]-tmp[sel]
+    nans = np.logical_and(np.isnan(lrgradients),mask[...,np.newaxis])
+    lrgradients[nans[...,0],0] = lrgradients[nans[...,0],1]
+    lrgradients[nans[...,1],1] = lrgradients[nans[...,1],0]
+    lrgradients[np.logical_not(mask),:] = np.nan
     if scaling != 1 :
         lrgradients*=scaling
     gbarte_2 = echo_time / 4.0 / np.pi
     sinc = np.sinc(gbarte_2*lrgradients)
     theta = np.pi * gbarte_2 * lrgradients
-    re = 0.5 * (sinc[0]*np.cos(theta[0])+sinc[1]*np.cos(theta[1]))
-    im = 0.5 * (sinc[0]*np.sin(theta[0])+sinc[1]*np.sin(theta[1]))
+    re = 0.5 * (sinc[...,0]*np.cos(theta[...,0])+
+                sinc[...,1]*np.cos(theta[...,1]))
+    im = 0.5 * (sinc[...,0]*np.sin(theta[...,0])+
+                sinc[...,1]*np.sin(theta[...,1]))
     sigloss = np.sqrt(re**2+im**2).astype(fieldmap.dtype)
     del lrgradients, nans, sinc, theta, re, im
     sigloss[np.isnan(sigloss)]=0
     return sigloss
+
+def compute_sigloss(fieldmap,mask,reg,fmat,pts,echo_time,slicing_axis=2,order=0):
+    fmri2wld = reg.dot(fmat)
+    shift_points = np.empty(pts.shape+(2,))
+    sv = np.zeros(3)
+    sv[slicing_axis] = 1
+    world_shift = fmri2wld[:3,:3].dot(sv)
+    shift_points[...,0] = nb.affines.apply_affine(
+        np.linalg.inv(fieldmap.get_affine()),
+        pts-world_shift[np.newaxis,np.newaxis,np.newaxis,:])
+    shift_points[...,1] = nb.affines.apply_affine(
+        np.linalg.inv(fieldmap.get_affine()), 
+        pts+world_shift[np.newaxis,np.newaxis,np.newaxis,:])
+    tmp = fieldmap.get_data()
+    tmp[mask==0] = np.nan
+    pts = nb.affines.apply_affine(np.linalg.inv(fieldmap.get_affine()),pts)
+    fmap_values = map_coordinates(
+        tmp, np.concatenate((
+                np.rollaxis(pts,-1,0)[...,np.newaxis],
+                np.rollaxis(shift_points,-2,0)),-1).reshape(3,-1),
+        order=order,cval=np.nan).reshape(pts.shape[:-1]+(3,))
+    lrgradients = np.empty(pts.shape[:-1]+(2,))
+    lrgradients[...,0] = fmap_values[...,1] - fmap_values[...,0]
+    lrgradients[...,1] = fmap_values[...,2] - fmap_values[...,0]
+    gbarte_2 = echo_time / 4.0 / np.pi
+    sinc = np.sinc(gbarte_2*lrgradients)
+    theta = np.pi * gbarte_2 * lrgradients
+    re = 0.5 * (sinc[...,0]*np.cos(theta[...,0])+
+                sinc[...,1]*np.cos(theta[...,1]))
+    im = 0.5 * (sinc[...,0]*np.sin(theta[...,0])+
+                sinc[...,1]*np.sin(theta[...,1]))
+    sigloss = np.sqrt(re**2+im**2).astype(fieldmap.get_data_dtype())
+    del lrgradients, sinc, theta, re, im, pts, fmap_values
+    sigloss[np.logical_not(mask)] = 0
+#    sigloss[np.isnan(sigloss)]=0
+    return sigloss
+
 
 class SliceImage4d(object):
     """
@@ -319,20 +358,14 @@ class RealignSliceAlgorithm(object):
 #        self.cbspline = _cspline_transform(im4d.get_data())
 
         if self.fmap != None:
-            self.sigloss = fieldmap_to_sigloss(
-                self.fmap.get_data(),self.mask.get_data(),
-                self.echo_time,self.im4d.slice_axis)
             fmap_inv_aff = np.linalg.inv(self.fmap.get_affine())
             fmap_vox = apply_affine(fmap_inv_aff,
                                     self.class_coords.reshape(-1,3))
             self.fmap_values = map_coordinates(
                 self.fmap.get_data(), fmap_vox.T, order=1).reshape(2,self.border_nvox)*self.fmap_scale
-            self.sigloss_values = map_coordinates(
-                self.sigloss, fmap_vox.T, order=1).reshape(2,self.border_nvox)
             del fmap_vox
         else:
             self.fmap_values = None
-            self.sigloss_values = None
             
         # Set the minimization method
         self.set_fmin(optimizer, stepsize,
