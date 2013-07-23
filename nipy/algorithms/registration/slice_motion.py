@@ -154,133 +154,6 @@ def compute_sigloss(fieldmap,mask,
     sigloss[np.isnan(sigloss)]=0
     return sigloss
 
-class SliceImage4d(object):
-    """
-    Class to represent a sequence of 3d scans (possibly acquired on a
-    slice-by-slice basis).
-
-    Object remains empty until the data array is actually loaded in memory.
-
-    Parameters
-    ----------
-      data : nd array or proxy (function that actually gets the array)
-    """
-    def __init__(self, data, affine, tr, tr_slices=None, start=0.0,
-                 slice_order=SLICE_ORDER, interleaved=INTERLEAVED,
-                 slice_trigger_times=None, slice_thickness=None,
-                 slice_info=None):
-        """
-        Configure fMRI acquisition time parameters.
-        """
-        self.affine = np.asarray(affine)
-        self.tr = float(tr)
-        self.start = float(start)
-        self.interleaved = bool(interleaved)
-
-        # guess the slice axis and direction (z-axis)
-        if slice_info == None:
-            orient = io_orientation(self.affine)
-            self.slice_axis = int(np.where(orient[:, 0] == 2)[0])
-            self.slice_direction = int(orient[self.slice_axis, 1])
-        else:
-            self.slice_axis = int(slice_info[0])
-            self.slice_direction = int(slice_info[1])
-
-        # unformatted parameters
-        self._tr_slices = tr_slices
-        self._slice_order = slice_order
-        self._slice_trigger_times = slice_trigger_times
-        self._slice_thickness = slice_thickness
-
-        self._vox_size = np.sqrt((self.affine[:3,:3]**2).sum(0))
-        if self._slice_thickness == None:
-            self._slice_thickness = self._vox_size[self.slice_axis]
-
-        if isinstance(data, np.ndarray):
-            self._data = data
-            self._shape = data.shape
-            self._get_data = None
-            self._init_timing_parameters()
-        else:
-            self._data = None
-            self._shape = None
-            self._get_data = data
-
-    def _load_data(self):
-        self._data = self._get_data()
-        self._shape = self._data.shape
-        self._init_timing_parameters()
-
-    def get_data(self):
-        if self._data == None:
-            self._load_data()
-        return self._data
-    
-    def get_shape(self):
-        if self._shape == None:
-            self._load_data()
-        return self._shape
-
-    def _init_timing_parameters(self):
-        # Number of slices
-        nslices = self.get_shape()[self.slice_axis]
-        self.nslices = nslices
-        # Default slice repetition time (no silence)
-        if self._tr_slices == None:
-            self.tr_slices = self.tr / float(nslices)
-        else:
-            self.tr_slices = float(self._tr_slices)
-        # Set slice order
-        if isinstance(self._slice_order, str):
-            if not self.interleaved:
-                aux = range(nslices)
-            else:
-                aux = range(nslices)[0::2] + range(nslices)[1::2]
-            if self._slice_order == 'descending':
-                aux.reverse()
-            self.slice_order = np.array(aux)
-        else:
-            # Verify correctness of provided slice indexes
-            provided_slices = np.array(sorted(self._slice_order))
-            if np.any(provided_slices != np.arange(nslices)):
-                raise ValueError(
-                    "Incorrect slice indexes were provided. There are %d "
-                    "slices in the volume, indexes should start from 0 and "
-                    "list all slices. "
-                    "Provided slice_order: %s" % (nslices, self._slice_order))
-            self.slice_order = np.asarray(self._slice_order)
-        if self._slice_trigger_times == None:
-            self._slice_trigger_times = np.arange(
-                0,self.tr*self._shape[3],self.tr)[:,np.newaxis].repeat(
-                nslices,axis=1)+self.slice_order[np.newaxis,:]*self.tr_slices
-
-    def z_to_slice(self, z):
-        """
-        Account for the fact that slices may be stored in reverse
-        order wrt the scanner coordinate system convention (slice 0 ==
-        bottom of the head)
-        """
-        if self.slice_direction < 0:
-            return self.nslices - 1 - z
-        else:
-            return z
-
-    def slice_to_z(self, z):
-        return self.slice_order[z]
-
-    def scanner_time(self, zv, t):
-        """
-        tv = scanner_time(zv, t)
-        zv, tv are grid coordinates; t is an actual time value.
-        """
-        corr = self.tr_slices * interp_slice_order(self.z_to_slice(zv),
-                                                   self.slice_order)
-        return (t - self.start - corr) / self.tr
-
-    def free_data(self):
-        if not self._get_data == None:
-            self._data = None
-
 class EPIInterpolation(object):
 
     """ Class to handle interpolation on a slice group basis,
@@ -646,8 +519,9 @@ class RealignSliceAlgorithm(EPIInterpolation):
             step = np.floor(self._subsamp.shape[0]/float(self.nsamples_per_slicegroup))
             self._subsamp[::step] = True
 
-            self._first_vol_subset[:] = (np.abs(zs[:,np.newaxis]-self.slice_order[np.arange(sg[0][1],nslices)][np.newaxis]) < self.st_ratio).sum(1) > 0
-            self._last_vol_subset[:] = (np.abs(zs[:,np.newaxis]-self.slice_order[np.arange(0,sg[1][1])][np.newaxis]) < self.st_ratio).sum(1) > 0
+            self._first_vol_subset[:] = np.any(
+                np.abs(zs[:,np.newaxis]-self.slice_order[np.arange(sg[0][1],nslices)][np.newaxis]) < self.st_ratio, 1) 
+            self._last_vol_subset[:] = np.any(np.abs(zs[:,np.newaxis]-self.slice_order[np.arange(0,sg[1][1])][np.newaxis]) < self.st_ratio,1)
 
             if sg[0][0] == sg[1][0]:
                 np.logical_and(self._last_vol_subset,
