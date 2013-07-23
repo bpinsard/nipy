@@ -87,7 +87,7 @@ def extract_boundaries(wmseg,bbr_dist,subsample=1,exclude=None,
     
     return coords_mm[valid_subset],class_coords[:,valid_subset]
 
-
+#old sigloss computation : wrong if epi/fmao orientation are really different
 def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
     tmp = fieldmap.copy()
     tmp[np.logical_not(mask)] = np.nan
@@ -115,7 +115,11 @@ def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
     sigloss[np.isnan(sigloss)]=0
     return sigloss
 
-def compute_sigloss(fieldmap,mask,reg,fmat,pts,echo_time,slicing_axis=2,order=0):
+# estime sigloss in EPI space using fieldmap with another sampling.
+# modified from FSL sigloss
+def compute_sigloss(fieldmap,mask,
+                    reg,fmat,pts,
+                    echo_time,slicing_axis=2,order=0):
     fmri2wld = reg.dot(fmat)
     shift_points = np.empty(pts.shape+(2,))
     sv = np.zeros(3)
@@ -147,10 +151,8 @@ def compute_sigloss(fieldmap,mask,reg,fmat,pts,echo_time,slicing_axis=2,order=0)
                 sinc[...,1]*np.sin(theta[...,1]))
     sigloss = np.sqrt(re**2+im**2).astype(fieldmap.get_data_dtype())
     del lrgradients, sinc, theta, re, im, pts, fmap_values
-    sigloss[np.logical_not(mask)] = 0
-#    sigloss[np.isnan(sigloss)]=0
+    sigloss[np.isnan(sigloss)]=0
     return sigloss
-
 
 class SliceImage4d(object):
     """
@@ -326,7 +328,6 @@ class RealignSliceAlgorithm(object):
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
         self.pe_sign = int(pe_dir > 0)*2-1
         self.pe_dir = abs(pe_dir)
-        self.fmap_scale=self.pe_sign*echo_spacing*self.dims[self.pe_dir]/2.0/np.pi
         self.affine_class = affine_class
 
 
@@ -358,6 +359,7 @@ class RealignSliceAlgorithm(object):
 #        self.cbspline = _cspline_transform(im4d.get_data())
 
         if self.fmap != None:
+            self.fmap_scale=self.pe_sign*echo_spacing*self.dims[self.pe_dir]/2.0/np.pi
             fmap_inv_aff = np.linalg.inv(self.fmap.get_affine())
             fmap_vox = apply_affine(fmap_inv_aff,
                                     self.class_coords.reshape(-1,3))
@@ -593,19 +595,66 @@ class RealignSliceAlgorithm(object):
         out_nii.get_header().set_zooms(voxsize + (self.im4d.tr,))
         return out_nii
 
+    def resample_surface(self, vertices, triangles, thickness, project_frac):
+        if VERBOSE:
+            print('Gridding on surface...')
+
+        normals = vertices_normals(vertices,triangles)
+        xyz = (vertices + (normals * thickness[:,np.newaxis]*project_frac))
+        interp_coords = nb.affines.apply_affine(
+            np.linalg.inv(self.fmap.get_affine()),xyz)
+        if self.fmap != None:
+            fmap_values = self.fmap_scale*map_coordinates(
+                self.fmap.get_data(), interp_coords.T, order=0)
+        surf_samples = np.empty(vertices.shape[:1]+self.dims[3:4],
+                                self.im4d.get_data().dtype)
+        tmp = np.zeros(surf_samples.shape[:-1])
+        for t in range(self.nscans):
+            sgs_trs = [(sg,trans) for sg,trans in zip(self.slice_groups,self.transforms) if sg[0][0]<=t and t<= sg[1][0]]
+            if len(sgs_trs)==1: #trivial case
+                interp_coords[...] = apply_affine(self.inv_affine.dot(
+                        np.linalg.inv(trans.as_affine())),xyz)
+                if self.fmap != None:
+                    interp_coords[...,self.pe_dir] += fmap_values
+            else: # we have to solve from which transform we sample
+                for sg,trans in sgs_trs:
+                    coords = apply_affine(self.inv_affine.dot(
+                            np.linalg.inv(trans.as_affine())).dot(mat), xyz)
+                    if self.fmap != None:
+                        coords[...,self.pe_dir] += fmap_values
+                    subset.fill(False)
+                    
+                    if sg[0][0]==t and sg[1][0]==t:
+                        times = np.arange(sg[0][1],sg[1][1])
+                    elif sg[0][0]==t:
+                        times = np.arange(sg[0][1],nslices)
+                    elif sg[1][0]==t:
+                        times = np.arange(sg[0][1],nslices)
+                    else:
+                        times = np.arange(0,nslices)
+                    subset = (np.abs(coords[...,sa,np.newaxis]-self.im4d.slice_to_z(times)[np.newaxis]) < self.st_ratio+.1).sum(-1) > 0
+                        
+                    interp_coords[subset,:] = coords[subset]
+            self.resample(tmp,interp_coords,t)
+            surf_samples[...,t] = tmp
+            print t
+        return surf_samples
+
     def invert_resample(self, volume, transform, order=1):
         xyz = np.mgrid[[slice(0,k) for k in self.im4d.get_shape()[:3]]]
-        fmri_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(transform).dot(self.im4d.affine)
+        mat = transform.dot(self.im4d.affine)
+        fmri_to_t1 = np.linalg.inv(self.reference.get_affine()).dot(mat)
+        fmri2vol = np.linalg.inv(volume.get_affine()).dot(mat)
         interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
         if self.fmap != None:
-            fmap_values = map_coordinates(
+            fmap_values = self.fmap_scale * map_coordinates(
                 self.fmap.get_data(),
                 interp_coords.T, order=1).reshape(xyz.shape[1:])
             xyz = xyz.astype(np.float32)
             #remove expected distortion in fmri
             xyz[self.pe_dir] -= fmap_values
-            interp_coords = apply_affine(fmri_to_t1,xyz.reshape(3,-1).T)
             del fmap_values
+        interp_coords = apply_affine(fmri2vol,xyz.reshape(3,-1).T)
         out = map_coordinates(volume,interp_coords.T,order=order).reshape(xyz.shape[1:])
         del xyz
         return out
@@ -787,7 +836,7 @@ def intensity_sd_heuristic(im4d,mask):
     peaks = slice_std > 1.96*global_std
     timepeaks = peaks[im4d.slice_order]
     np.where(np.logical_not(timepeaks))[0]
-
+    
     return runstd
     
 
@@ -813,3 +862,25 @@ def vox2ras_tkreg(voldim, voxres):
             [0, 0, voxres[2], -voxres[2]*voldim[2]/2],
             [0,-voxres[1],0,voxres[1]*voldim[1]/2],
             [0,0,0,1]])
+
+def surface_resample(vertices, triangles, thickness, 
+                     fieldmap, epi, registration,
+                     project_frac=.5, phase_encoding_dir=-1): 
+    normals = vertices_normals(vertices,triangles)
+    sampling_points = vertices + normals * thickness * project_frac
+    if fieldmap != None:
+        pe_sign = int(phase_encoding_dir > 0)*2-1
+        pe_dir = abs(phase_encoding_dir)
+        fmap_scale=pe_sign*echo_spacing*nii.shape[self.pe_dir]/2.0/np.pi
+        fmap_shift = fmap_scale * map_coordinates(fieldmap.get_data(), 
+                                                  sampling_points.T, order=0)
+    surf_samples = np.empty(vertices.shape[0]+epi.shape[3:4], 
+                            epi.get_data_dtype())
+    iepimat = np.linalg.inv(epi.get_affine())
+    if len(epi.shape)>3 and len(registration.shape)>3:
+        for t,mat in enumerate(registration):
+            frame_pts = nb.affines.apply_affine(mat.dot(iepimat),
+                                               sampling_points)
+            if fieldmap != None:
+                frame_pts[pe_dir] += fmap_shift
+            surf_samples[t]
