@@ -211,8 +211,9 @@ class EPIInterpolation(object):
         else:
             self.transforms = transforms
 
-        self.st_ratio = self.slice_thickness/self.voxsize[self.slice_axis]/2.0
-
+        self.st_ratio = 1
+        if self.slice_thickness != None:
+            self.st_ratio = self.slice_thickness/self.voxsize[self.slice_axis]/2.0
 
         # Default slice repetition time (no silence)
         if self.slice_tr == None:
@@ -222,7 +223,7 @@ class EPIInterpolation(object):
         # Set slice order
         if isinstance(self.slice_order, str):
             if self.interleaved < 2:
-                aux = range(nslices)
+                aux = range(self.nslices)
             else:
                 aux = reduce(
                     lambda l,s: l+range(self.nslices)[s::self.interleaved],
@@ -325,7 +326,7 @@ class EPIInterpolation(object):
 
         subset = np.zeros(coords.shape[:-1], dtype=np.bool)
         tmp = np.empty(coords.shape[:-1])
-        res = np.empty(tmp.shape+(self.nvolumes,),self.epi.get_data_dtype())
+        res = np.empty(tmp.shape+(self.nvolumes,),np.float32)
         for t in range(self.nvolumes):
             # select slice groups containing volume slices
             sgs_trs = [ (sg,trans) for sg,trans \
@@ -354,14 +355,53 @@ class EPIInterpolation(object):
                         times = np.arange(sg[0][1],nslices)
                     else:
                         times = np.arange(0,nslices)
-                    subset = (np.abs(coords[...,self.slicing_axis,np.newaxis]-
-                                     self.slice_order[times][np.newaxis]) \
-                                  < self.st_ratio+.1).sum(-1) > 0
+                    subset = np.any(
+                        np.abs(coords[...,self.slicing_axis,np.newaxis]-
+                               self.slice_order[times][np.newaxis]) \
+                            < self.st_ratio+.1, -1)
                     interp_coords[subset,:] = coords[subset]
             self.resample(tmp,interp_coords,t)
             res[...,t] = tmp
             print t
         return res
+    
+
+    def _epi_inv_shiftmap(self, t):
+        # compute inverse shift map using approximate nearest neighbor
+        #
+        fmap2fmri = np.linalg.inv(t.as_affine().dot(
+                self.epi.get_affine())).dot( self.fmap.get_affine())
+        coords = nb.affines.apply_affine(
+            fmap2fmri,
+            np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
+        shift = self.fmap_scale * self.fmap.get_data()
+        coords[...,self.pe_dir] += shift
+        coords = coords[shift!=0]
+        shift = shift[shift!=0]
+        inv_shiftmap = np.empty(self.epi.shape[:-1])
+        inv_shiftmap_dist = np.empty(self.epi.shape[:-1])
+        inv_shiftmap.fill(np.inf)
+        inv_shiftmap_dist.fill(np.inf)
+        rcoords = np.round(coords)
+        dists = np.sum((coords-rcoords)**2,-1)
+        for c,d,s in zip(rcoords,dists,shift):
+            if d < inv_shiftmap_dist[c[0],c[1],c[2]] \
+                    and s < inv_shiftmap[c[0],c[1],c[2]]:
+                inv_shiftmap[c[0],c[1],c[2]] = -s
+        return inv_shiftmap
+
+    def inv_resample(self, vol, ti=0, order=0):
+        grid = np.rollaxis(np.mgrid[[slice(0,s) for s in self.epi.shape[:-1]]], 0, 4)
+        if self.fmap != None:
+            inv_shift = self._epi_inv_shiftmap(self.transforms[ti])
+            grid[...,self.pe_dir] += inv_shift
+        epi2vol = np.linalg.inv(vol.get_affine()).dot(
+            self.transforms[ti].as_affine().dot(self.epi.get_affine()))
+        voxs = nb.affines.apply_affine(epi2vol, grid)
+        rvol = map_coordinates(
+            vol.get_data(),
+            voxs.reshape(-1,3).T, order=order).reshape(self.epi.shape[:-1])
+        return rvol
 
 
     def resample_surface(self, vertices, triangles,thickness,project_frac=.5):
@@ -753,9 +793,10 @@ def resample_mat_shape(mat,shape,voxsize):
     return newmat,tuple(newshape.astype(np.int32).tolist())
 
 
-def intensity_sd_heuristic(im4d,mask):
+def intensity_sd_heuristic(alg,mask):
     # return split of run in slice and also stable vs. motion slices
-    ddata = np.diff(im4d.get_data().reshape((-1,)+im4d.get_shape()[2:]),1,-1)
+    ddata = np.diff(
+        alg.epi.get_data().reshape((-1,)+alg.epi.get_shape()[2:]), 1, -1)
     slice_std = ddata.std(0)
     global_std = ddata.std()
     peaks = slice_std > 1.96*global_std
