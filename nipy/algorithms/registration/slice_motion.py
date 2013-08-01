@@ -20,7 +20,7 @@ from ._registration import (_cspline_transform,
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
 import scipy.stats
 from scipy.ndimage.interpolation import map_coordinates
-
+from scipy.interpolate import LinearNDInterpolator
 
 # Module globals
 VERBOSE = True  # enables online print statements
@@ -934,24 +934,34 @@ class OnlineEPICorrection(object):
 
         # register first frame
         _, affine1, data1 = stack.iter_frame().next()
+        self.affine=affine1
         self.slice_order = stack._slice_order
-        nslices = stack.nslices
+        self.nslices = stack.nslices
         last_reg = self.affine_class()
-        self.slabs.append(((0,0),(0,nslices-1)))
+        self.slabs.append(((0,0),(0,self.nslices-1)))
+        pts = np.vstack(np.where(data1>100)).T
+#        self._interp = LinearNDInterpolator(
+#            np.rollaxis(np.mgrid[[slice(0,d) for d in data1.shape]], 0, 4).reshape(-1,3),
+#            pts,
+#            data1[data1>100])
         self.estimate_instant_motion(data1[...,np.newaxis], affine1, last_reg)
         #suppose first frame was motion free
         self.transforms.append(last_reg)
-        epi_mask=self.inv_resample(self.mask, last_reg, affine1, data1.shape)>0
+        self.epi_mask=self.inv_resample(
+            self.mask, last_reg, affine1, data1.shape) > 0
         
         for fr,sl,aff,tt,slice_data in stack.iter_slices():
-            sl_mask = epi_mask[...,sl]
+            sl_mask = self.epi_mask[...,sl]
+            slab_data.append((fr,sl,aff,tt,slice_data))
+
             if np.count_nonzero(sl_mask) < nvox_min:
                 data1[...,sl] = slice_data
                 continue
+
             int_chg = (slice_data[sl_mask]-data1[sl_mask,sl]).astype(np.float)
             mean_chg, std_chg = int_chg.mean(), int_chg.std()
             print mean_chg, std_chg
-            slab_data.append((fr,sl,aff,tt,slice_data))
+
             mot = std_chg > 50
             mot_flags.append(mot)
 
@@ -965,7 +975,8 @@ class OnlineEPICorrection(object):
                       np.where(self.slice_order==slab_data[-1][1])[0][0])))
                 reg = self._register_slab(
                     self.slabs[-1],
-                    [s for s,m in zip(slab_data,mot_flags) if not m])
+                    slab_data)
+#                    [s for s,m in zip(slab_data,mot_flags) if not m])
                 self.transforms.append(reg)
                 slab_data = []
                 mot_flags = []
@@ -981,27 +992,54 @@ class OnlineEPICorrection(object):
             self.transforms.append(reg)
 
     def _register_slab(self,slab,slab_data):
-        nframes = slab[1][0] - slab[0][0]
+        nframes = slab[1][0] - slab[0][0] + 1
+        """
+        mask_pts = [(np.vstack(np.where(self.epi_mask[...,s])).T \
+                         for s in range(self.epi_mask.shape[-1]))]
+        slice_npts = [s.shape[1] for s in mask_pts]
+        npts = reduce(lambda s,c: s+slice_npts[c[1]], slab_data, 0)
+        pts = np.empty((npts,4), np.float32) # todo: see if we can use int for tt instead
+        values = np.empty(npts, np.float32)
+        seek = 0
+        for fr,sl,aff,tt,slice_data in slab_data:
+            npts = slice_npts[sl]
+            pts[seek:seek+npts,:3] = mask_pts[sl]
+            pts[seek:seek+npts,3]  = tt
+            values[seek:seek+npts] = slice_data[self.epi_mask[...,sl]]
+            seek += npts
+        print value.size, seek
+        self._interp = LinearNDInterpolator(pts,values)
+        """
         data = np.empty(slab_data[0][-1].shape + \
-                            (self.slice_order.max(),nframes))
+                            (self.slice_order.max()+1,nframes))
         data.fill(np.nan) # just to check, to be removed?
         fr1 = slab_data[0][0]
         for fr,sl,aff,tt,slice_data in slab_data:
             data[...,sl,fr-fr1] = slice_data
+        # fill missing slice with following or previous slice
+        if nframes > 1:
+            for si in range(min(0,(nframes==2)*slab[1][1], slab[0][1])):
+                data[...,self.slice_order[si],0] = data[...,self.slice_order[si],1]
+            for si in range(max((nframes==2)*slab[0][1],sl), self.nslices):
+                data[...,self.slice_order[si],-1] = data[...,self.slice_order[si],-2]
+
         reg = self.transforms[-1].copy()
-        self.estimate_instant_motion(data, aff, reg)
+        self.estimate_instant_motion(data, self.affine, reg)
         return reg
 
     def estimate_instant_motion(self, data, affine, transform):
 
+        
         if hasattr(self,'cbspline') and \
-                not data.shape[-1] > self.cbspline.shape[-1]:
+                data.shape[-1] > self.cbspline.shape[-1]:
             del self.cbspline
         if not hasattr(self,'cbspline'):
             self.cbspline = np.empty(data.shape,np.double)
         for t in range(data.shape[-1]):
             self.cbspline[:, :, :, t] =\
                 _cspline_transform(data[:, :, :, t])
+
+        self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
 
         def f(pc):
             self._init_energy(pc, data, affine, transform)
@@ -1088,12 +1126,11 @@ class OnlineEPICorrection(object):
         """
         sa = self.slice_axis
         nvols = data.shape[-1]
-        nslices = data.shape[sa]
         ref2fmri = np.linalg.inv(transform.as_affine().dot(affine))
         slab = self.slabs[-1]
         
         # if change of test points z is above threshold recompute subset
-        test_points = np.array([[0,0,0],[0,0,nslices]])
+        test_points = np.array([[0,0,0],[0,0,self.nslices]])
         recompute_subset = np.abs(
             self._last_subsampling_transform.apply(test_points) -
             transform.apply(test_points))[:,sa].max() > 0.1
@@ -1107,7 +1144,7 @@ class OnlineEPICorrection(object):
             self._last_subsampling_transform = transform.copy()
             # adapt subsampling to keep regular amount of points in each slice
             zs = self.slg_class_voxels[...,sa].sum(0)/2.
-            samples_slice_hist = np.histogram(zs,np.arange(nslices+1)-self.st_ratio)
+            samples_slice_hist = np.histogram(zs,np.arange(self.nslices+1)-self.st_ratio)
             # this computation is wrong 
             self._subsamp[:] = False
             step = np.floor(self._subsamp.shape[0]/float(self.nsamples_per_slicegroup))
@@ -1115,7 +1152,7 @@ class OnlineEPICorrection(object):
 
             self._first_vol_subset[:] = np.any(
                 np.abs(zs[:,np.newaxis]-self.slice_order[
-                        np.arange(slab[0][1],nslices)][np.newaxis]
+                        np.arange(slab[0][1],self.nslices)][np.newaxis]
                        ) < self.st_ratio, 1) 
             self._last_vol_subset[:] = np.any(
                 np.abs(zs[:,np.newaxis]-self.slice_order[
@@ -1182,6 +1219,8 @@ class OnlineEPICorrection(object):
 
 
     def resample(self,out,coords,time=None):
+#        out[:] = self._interp(coords.reshape(-1,3)).reshape((coords.shape[:2]))
+#        return
         if not isinstance(time,np.ndarray):
             _cspline_sample3d(
                 out,self.cbspline[...,time],
@@ -1212,14 +1251,12 @@ class OnlineEPICorrection(object):
         self.optimizer_kwargs.setdefault('maxfun', MAXFUN)
         self.use_derivatives = use_derivatives(self.optimizer)
 
-
     def _energy(self):
         percent_contrast = 200*np.diff(self.data,1,0)/self.data.sum(0)
         percent_contrast[np.abs(percent_contrast)<1e-6] = 0
         bbr_offset=0 # TODO add as an option, and add weighting
         cost = (1.0+np.tanh(percent_contrast-bbr_offset)).mean()
         return cost
-
 
     def _epi_inv_shiftmap(self, transform, affine, shape):
         # compute inverse shift map using approximate nearest neighbor
