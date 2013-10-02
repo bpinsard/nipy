@@ -829,7 +829,7 @@ def vox2ras_tkreg(voldim, voxres):
             [0,-voxres[1],0,voxres[1]*voldim[1]/2],
             [0,0,0,1]])
 
-
+import pylab
 
 class OnlineEPICorrection(object):
     
@@ -884,8 +884,8 @@ class OnlineEPICorrection(object):
         self.slice_thickness = slice_thickness
 
         self.st_ratio = 1
-        if self.slice_thickness != None:
-            self.st_ratio = self.slice_thickness/self.voxsize[slice_axis]/2.0
+#        if self.slice_thickness != None:
+#            self.st_ratio = self.slice_thickness/self.voxsize[slice_axis]/2.0
 
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
         self.min_sample_number = min_nsamples_per_slicegroup        
@@ -927,7 +927,7 @@ class OnlineEPICorrection(object):
 
         slab_data = []
         mot_flags = []
-        nvox_min = 64
+        nvox_min = 128
         slab_min_slice = 5 # arbitrary...
 
         self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
@@ -958,16 +958,17 @@ class OnlineEPICorrection(object):
                 data1[...,sl] = slice_data
                 continue
 
-            int_chg = (slice_data[sl_mask]-data1[sl_mask,sl]).astype(np.float)
-            mean_chg, std_chg = int_chg.mean(), int_chg.std()
-            print mean_chg, std_chg
-
-            mot = std_chg > 50
+            # use phase correlation to detect motion
+            from cv2 import phaseCorrelate
+            mot = phaseCorrelate(data1[...,sl].astype(np.float32)*sl_mask,
+                                 slice_data.astype(np.float32)*sl_mask)
+            print fr, sl, mot, np.sqrt(mot[0]**2+mot[1]**2)
+            
+            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .14
             mot_flags.append(mot)
 
             # motion detected and there are sufficient slices in slab
-            if mot and len(mot_flags) > 1 and mot_flags[-2] and \
-                    sum([not m for m in mot_flags]) > slab_min_slice:
+            if mot and (len(mot_flags) > 1 and mot_flags[-2]):
                 self.slabs.append(
                     ((slab_data[0][0],
                       np.where(self.slice_order==slab_data[0][1])[0][0]),
@@ -980,7 +981,9 @@ class OnlineEPICorrection(object):
                 self.transforms.append(reg)
                 slab_data = []
                 mot_flags = []
-                
+                last_reg = reg
+                self.epi_mask=self.inv_resample(
+                    self.mask, last_reg, affine1, data1.shape) > 0
             data1[...,sl] = slice_data
         if len(slab_data) > 0:
             self.slabs.append(
@@ -993,23 +996,6 @@ class OnlineEPICorrection(object):
 
     def _register_slab(self,slab,slab_data):
         nframes = slab[1][0] - slab[0][0] + 1
-        """
-        mask_pts = [(np.vstack(np.where(self.epi_mask[...,s])).T \
-                         for s in range(self.epi_mask.shape[-1]))]
-        slice_npts = [s.shape[1] for s in mask_pts]
-        npts = reduce(lambda s,c: s+slice_npts[c[1]], slab_data, 0)
-        pts = np.empty((npts,4), np.float32) # todo: see if we can use int for tt instead
-        values = np.empty(npts, np.float32)
-        seek = 0
-        for fr,sl,aff,tt,slice_data in slab_data:
-            npts = slice_npts[sl]
-            pts[seek:seek+npts,:3] = mask_pts[sl]
-            pts[seek:seek+npts,3]  = tt
-            values[seek:seek+npts] = slice_data[self.epi_mask[...,sl]]
-            seek += npts
-        print value.size, seek
-        self._interp = LinearNDInterpolator(pts,values)
-        """
         data = np.empty(slab_data[0][-1].shape + \
                             (self.slice_order.max()+1,nframes))
         data.fill(np.nan) # just to check, to be removed?
@@ -1018,17 +1004,20 @@ class OnlineEPICorrection(object):
             data[...,sl,fr-fr1] = slice_data
         # fill missing slice with following or previous slice
         if nframes > 1:
-            for si in range(min(0,(nframes==2)*slab[1][1], slab[0][1])):
-                data[...,self.slice_order[si],0] = data[...,self.slice_order[si],1]
-            for si in range(max((nframes==2)*slab[0][1],sl), self.nslices):
-                data[...,self.slice_order[si],-1] = data[...,self.slice_order[si],-2]
+            for si in range(min((nframes==2)*slab[1][1], slab[0][1])):
+                so = self.slice_order[si]
+                data[...,so,0] = data[...,so,1]
+            pos = np.where(self.slice_order==sl)[0]
+            for si in range(max((nframes==2)*slab[0][1],pos), self.nslices):
+                so = self.slice_order[si]
+                data[...,so,-1] = data[...,so,-2]
 
         reg = self.transforms[-1].copy()
         self.estimate_instant_motion(data, self.affine, reg)
+        del data
         return reg
 
     def estimate_instant_motion(self, data, affine, transform):
-
         
         if hasattr(self,'cbspline') and \
                 data.shape[-1] > self.cbspline.shape[-1]:
