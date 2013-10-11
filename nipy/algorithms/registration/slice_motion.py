@@ -316,14 +316,16 @@ class EPIInterpolation(object):
 
     def resample_coords(self, coords):
 
+        interp_coords = np.empty(coords.shape)
         if self.fmap != None:
             ref2fmap = np.linalg.inv(self.fmap.get_affine())
-            interp_coords = apply_affine(ref2fmap, coords)
+            interp_coords[:] = apply_affine(ref2fmap, coords)
             fmap_values = self.fmap_scale * \
                 map_coordinates(self.fmap.get_data(),
                                 interp_coords.reshape(-1,3).T,
                                 order=1).reshape(interp_coords.shape[:-1])
-
+            
+        tmp_coords = np.empty(coords.shape)
         subset = np.zeros(coords.shape[:-1], dtype=np.bool)
         tmp = np.empty(coords.shape[:-1])
         res = np.empty(tmp.shape+(self.nvolumes,),np.float32)
@@ -335,34 +337,37 @@ class EPIInterpolation(object):
             if len(sgs_trs) == 1: #easy, one transform per volume
                 inv_reg = np.linalg.inv(sgs_trs[0][1].as_affine())
                 wld2epi = self.inv_affine.dot(inv_reg)
-                interp_coords[...] = apply_affine(wld2epi, coords)
+                interp_coords[:] = apply_affine(wld2epi, coords)
                 if self.fmap != None:
                     interp_coords[...,self.pe_dir] += fmap_values
             else: # we have to solve which transform we sample with
                 for sg,trans in sgs_trs:
                     inv_reg = np.linalg.inv(trans.as_affine())
                     wld2epi = self.inv_affine.dot(inv_reg)
-                    interp_coords = apply_affine(wld2epi, coords)
+                    tmp_coords[:] = apply_affine(wld2epi, coords)
                     if self.fmap != None:
-                        interp_coords[...,self.pe_dir] += fmap_values
+                        tmp_coords[...,self.pe_dir] += fmap_values
                     subset.fill(False)
                     
                     if sg[0][0]==t and sg[1][0]==t:
                         times = np.arange(sg[0][1],sg[1][1])
                     elif sg[0][0]==t:
-                        times = np.arange(sg[0][1],nslices)
+                        times = np.arange(sg[0][1], self.nslices)
                     elif sg[1][0]==t:
-                        times = np.arange(sg[0][1],nslices)
+                        times = np.arange(sg[0][1], self.nslices)
                     else:
-                        times = np.arange(0,nslices)
+                        times = np.arange(0, self.nslices)
                     subset = np.any(
-                        np.abs(coords[...,self.slicing_axis,np.newaxis]-
+                        np.abs(tmp_coords[...,self.slice_axis,np.newaxis]-
                                self.slice_order[times][np.newaxis]) \
                             < self.st_ratio+.1, -1)
-                    interp_coords[subset,:] = coords[subset]
+                    interp_coords[subset] = tmp_coords[subset]
             self.resample(tmp,interp_coords,t)
             res[...,t] = tmp
             print t
+        del interp_coords, tmp_coords, subset, tmp
+        if self.fmap != None:
+            del fmap_values
         return res
     
 
@@ -950,10 +955,17 @@ class OnlineEPICorrection(object):
         self.epi_mask=self.inv_resample(
             self.mask, last_reg, affine1, data1.shape) > 0
         
+
+        slice_voxs_m = np.empty(self.slg_class_voxels.shape[1],np.bool)
+        slice_axes = np.ones(3,np.bool)
+        slice_axes[self.slice_axis] = False
+        
+        self.mot_ests=[]
+
         for fr,sl,aff,tt,slice_data in stack.iter_slices():
             sl_mask = self.epi_mask[...,sl]
-            slab_data.append((fr,sl,aff,tt,slice_data))
 
+            """
             if np.count_nonzero(sl_mask) < nvox_min:
                 data1[...,sl] = slice_data
                 continue
@@ -964,11 +976,46 @@ class OnlineEPICorrection(object):
                                  slice_data.astype(np.float32)*sl_mask)
             print fr, sl, mot, np.sqrt(mot[0]**2+mot[1]**2)
             
-            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .14
+            df = (data1[...,sl].astype(np.float32)*sl_mask- \
+                      slice_data.astype(np.float32)*sl_mask)
+            df[:] = df - df.mean()
+            import scipy.stats
+            print df[sl_mask].std(), scipy.stats.skew(df[sl_mask]), scipy.stats.kurtosis(df[sl_mask])
+            """
+
+            slice_voxs_m[:]=(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.4).sum(0)>1
+            slice_voxs = np.round(
+                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes]
+                ).astype(np.int32)
+            non_overlap = np.diff(slice_voxs,0).sum(-1)>0
+            slice_voxs_m[slice_voxs_m]=non_overlap
+            del slice_voxs, non_overlap
+            if np.count_nonzero(slice_voxs_m) < 100:
+                data1[...,sl] = slice_data
+                slab_data.append((fr,sl,aff,tt,slice_data))
+                continue
+            slice_voxs = np.round(
+                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes]
+                ).astype(np.int32)
+            diff0 = (data1[...,sl][(slice_voxs[0,:,0],slice_voxs[0,:,1])] -
+                     data1[...,sl][(slice_voxs[1,:,0],slice_voxs[1,:,1])]).astype(np.float32)
+            diff1 = (slice_data[(slice_voxs[0,:,0],slice_voxs[0,:,1])] -
+                     slice_data[(slice_voxs[1,:,0],slice_voxs[1,:,1])]).astype(np.float32)
+            del slice_voxs
+            diff0[:] = diff0/diff0.sum()[np.newaxis]
+            diff1[:] = diff1/diff1.sum()[np.newaxis]
+            vecs = np.diff(self.slg_class_voxels[:,slice_voxs_m,:2],1,0)[0]
+            avgmot = ((vecs*(diff1-diff0)[:,np.newaxis]).mean(0)**2).sum()
+            print fr,sl,'average motion vector length',avgmot
+            mot = avgmot > 1e-3
+            
+#            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .1
+#            mot = scipy.stats.kurtosis(df[sl_mask])>30
             mot_flags.append(mot)
+            self.mot_ests.append((fr*stack.nslices+sl, avgmot))
 
             # motion detected and there are sufficient slices in slab
-            if mot and (len(mot_flags) > 1 and mot_flags[-2]):
+            if mot and len(slab_data) >= stack.nslices:#and (len(mot_flags) > 1 and mot_flags[-2]):
                 self.slabs.append(
                     ((slab_data[0][0],
                       np.where(self.slice_order==slab_data[0][1])[0][0]),
@@ -984,6 +1031,8 @@ class OnlineEPICorrection(object):
                 last_reg = reg
                 self.epi_mask=self.inv_resample(
                     self.mask, last_reg, affine1, data1.shape) > 0
+
+            slab_data.append((fr,sl,aff,tt,slice_data))
             data1[...,sl] = slice_data
         if len(slab_data) > 0:
             self.slabs.append(
@@ -1004,11 +1053,16 @@ class OnlineEPICorrection(object):
             data[...,sl,fr-fr1] = slice_data
         # fill missing slice with following or previous slice
         if nframes > 1:
-            for si in range(min((nframes==2)*slab[1][1], slab[0][1])):
+            n_missl = slab[0][1]
+            if nframes==2:
+                n_missl = min(slab[1][1]+1, n_missl)
+            for si in range(n_missl):
                 so = self.slice_order[si]
                 data[...,so,0] = data[...,so,1]
             pos = np.where(self.slice_order==sl)[0]
-            for si in range(max((nframes==2)*slab[0][1],pos), self.nslices):
+            if nframes == 2:
+                pos = max(slab[0][1], pos)
+            for si in range(pos, self.nslices):
                 so = self.slice_order[si]
                 data[...,so,-1] = data[...,so,-2]
 
@@ -1197,7 +1251,7 @@ class OnlineEPICorrection(object):
         self.resample(
             self.data[:,:nsamples_1vol],
             self.slg_class_voxels[:,self._first_vol_subset_ssamp],0)
-        for i in range(1, nvols - (n_samples_lvol > 0) ):
+        for i in range(1, nvols - (nvols > 1) ):
             seek = nsamples_1vol + n_samples * (i -1)
             self.resample(self.data[:,seek:seek+n_samples],
                           self.slg_class_voxels[:,self._subsamp],i)
