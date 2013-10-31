@@ -57,7 +57,7 @@ n_scans = 128
 tr = 2.4
 
 # paradigm
-frametimes = np.linspace(0, (n_scans - 1) * tr, n_scans)
+frametimes = np.linspace(0.5 * tr, (n_scans - .5) * tr, n_scans)
 
 # confounds
 hrf_model = 'canonical with derivative'
@@ -150,6 +150,9 @@ for index, (contrast_id, contrast_val) in enumerate(contrasts.items()):
              vmin=- vmax,
              vmax=vmax,
              anat=None,
+             cut_coords=None,
+             slicer='z',
+             black_bg=True,  # looks much better thus
              figure=10,
              threshold=2.5)
     plt.savefig(path.join(write_dir, '%s_z_map.png' % contrast_id))
