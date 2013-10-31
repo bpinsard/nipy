@@ -15,6 +15,7 @@ from ...core.image.image_spaces import (make_xyz_image,
 from .optimizer import configure_optimizer, use_derivatives
 from .affine import Rigid
 from ._registration import (_cspline_transform,
+                            _cspline_sample2d,
                             _cspline_sample3d,
                             _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
@@ -916,7 +917,7 @@ class OnlineEPICorrection(object):
             optimizer, stepsize,
             xtol=xtol, ftol=ftol, gtol=gtol,
             maxiter=maxiter, maxfun=maxfun)
-        
+
         self.data = np.array([[]])
         self._last_subsampling_transform = affine_class(np.ones(12)*5)
         self._subset = np.ones(self.border_nvox,dtype=np.bool)
@@ -925,6 +926,7 @@ class OnlineEPICorrection(object):
         self._last_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
         self._first_vol_subset_ssamp=np.zeros(self.border_nvox, dtype=np.bool)
         self._last_vol_subset_ssamp=np.zeros(self.border_nvox, dtype=np.bool)
+        self._samples_data = np.empty((2,self.border_nvox))
 
     def __call__(self, stack):
         
@@ -938,75 +940,69 @@ class OnlineEPICorrection(object):
         self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
 
         # register first frame
-        _, affine1, data1 = stack.iter_frame().next()
-        self.affine=affine1
+        _, self.affine, data1 = stack.iter_frame().next()
         self.slice_order = stack._slice_order
         self.nslices = stack.nslices
         last_reg = self.affine_class()
         self.slabs.append(((0,0),(0,self.nslices-1)))
-        pts = np.vstack(np.where(data1>100)).T
-#        self._interp = LinearNDInterpolator(
-#            np.rollaxis(np.mgrid[[slice(0,d) for d in data1.shape]], 0, 4).reshape(-1,3),
-#            pts,
-#            data1[data1>100])
-        self.estimate_instant_motion(data1[...,np.newaxis], affine1, last_reg)
+
         #suppose first frame was motion free
         self.transforms.append(last_reg)
         self.epi_mask=self.inv_resample(
-            self.mask, last_reg, affine1, data1.shape) > 0
-        
+            self.mask, last_reg, data1.shape) > 0
 
-        slice_voxs_m = np.empty(self.slg_class_voxels.shape[1],np.bool)
-        slice_axes = np.ones(3,np.bool)
-        slice_axes[self.slice_axis] = False
+        self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
+
+        self.apply_transform(
+            self.transforms[0],
+            self.class_coords, self.slg_class_voxels,
+            self.fmap_values, phase_dim=data1.shape[self.pe_dir])
+
+        self.resample(self._samples_data, self.slg_class_voxels,0)
+        # remove samples that does not have expected contrast (ie sigloss)
+        self._reliable_samples = np.logical_and(
+            -np.squeeze(np.diff(self._samples_data,1,0)) > 0,
+            np.all(self._samples_data>0,0))
+        samples_sum = np.squeeze(
+            np.diff(self._samples_data[:,self._reliable_samples],1,0))
+        samples_sqsum = samples_sum**2
+        #initialize the variance to 1st frame all samples' variance
+#        nsamples = np.array(st.nslices)
         
+        slice_voxs_m = np.empty(self.slg_class_voxels.shape[1], np.bool)
+        slice_axes = np.ones(3, np.bool)
+        slice_axes[self.slice_axis] = False
+        slice_spline = np.empty(data1.shape[:2])
+
         self.mot_ests=[]
 
         for fr,sl,aff,tt,slice_data in stack.iter_slices():
-            sl_mask = self.epi_mask[...,sl]
-
-            """
-            if np.count_nonzero(sl_mask) < nvox_min:
-                data1[...,sl] = slice_data
-                continue
-
-            # use phase correlation to detect motion
-            from cv2 import phaseCorrelate
-            mot = phaseCorrelate(data1[...,sl].astype(np.float32)*sl_mask,
-                                 slice_data.astype(np.float32)*sl_mask)
-            print fr, sl, mot, np.sqrt(mot[0]**2+mot[1]**2)
             
-            df = (data1[...,sl].astype(np.float32)*sl_mask- \
-                      slice_data.astype(np.float32)*sl_mask)
-            df[:] = df - df.mean()
-            import scipy.stats
-            print df[sl_mask].std(), scipy.stats.skew(df[sl_mask]), scipy.stats.kurtosis(df[sl_mask])
-            """
+            sl_mask = self.epi_mask[...,sl]
+            
+            slice_voxs_m[:] = np.logical_and(
+                np.all(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.2,0),
+                self._reliable_samples)
+            
 
-            slice_voxs_m[:]=(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.4).sum(0)>1
-            slice_voxs = np.round(
-                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes]
-                ).astype(np.int32)
-            non_overlap = np.diff(slice_voxs,0).sum(-1)>0
-            slice_voxs_m[slice_voxs_m]=non_overlap
-            del slice_voxs, non_overlap
-            if np.count_nonzero(slice_voxs_m) < 100:
+            n_samples = np.count_nonzero(slice_voxs_m)
+            if n_samples < 100:
                 data1[...,sl] = slice_data
                 slab_data.append((fr,sl,aff,tt,slice_data))
                 continue
-            slice_voxs = np.round(
-                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes]
-                ).astype(np.int32)
-            diff0 = (data1[...,sl][(slice_voxs[0,:,0],slice_voxs[0,:,1])] -
-                     data1[...,sl][(slice_voxs[1,:,0],slice_voxs[1,:,1])]).astype(np.float32)
-            diff1 = (slice_data[(slice_voxs[0,:,0],slice_voxs[0,:,1])] -
-                     slice_data[(slice_voxs[1,:,0],slice_voxs[1,:,1])]).astype(np.float32)
-            del slice_voxs
-            diff0[:] = diff0/diff0.sum()[np.newaxis]
-            diff1[:] = diff1/diff1.sum()[np.newaxis]
-            vecs = np.diff(self.slg_class_voxels[:,slice_voxs_m,:2],1,0)[0]
-            avgmot = ((vecs*(diff1-diff0)[:,np.newaxis]).mean(0)**2).sum()
-            print fr,sl,'average motion vector length',avgmot
+            slice_spline[:] = _cspline_transform(slice_data)
+            slice_samples = np.empty((2, n_samples))
+            _cspline_sample2d(
+                slice_samples, slice_data,
+                *self.slg_class_voxels[:,slice_voxs_m][...,slice_axes].T)
+            d0 = self._samples_data[0,slice_voxs_m]/self._samples_data[1,slice_voxs_m]
+            d1 = slice_samples[0]/slice_samples[1]
+
+                       
+            vecs = np.diff(
+                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes],1,0)[0]
+            avgmot = ((vecs*(d1-d0)[:,np.newaxis]).mean(0)**2).sum()
+            print fr,sl,'average motion vector length', avgmot
             mot = avgmot > 1e-3
             
 #            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .1
@@ -1015,7 +1011,7 @@ class OnlineEPICorrection(object):
             self.mot_ests.append((fr*stack.nslices+sl, avgmot))
 
             # motion detected and there are sufficient slices in slab
-            if mot and len(slab_data) >= stack.nslices:#and (len(mot_flags) > 1 and mot_flags[-2]):
+            if not mot and len(mot_flags)>2 and mot_flags[-2]:
                 self.slabs.append(
                     ((slab_data[0][0],
                       np.where(self.slice_order==slab_data[0][1])[0][0]),
@@ -1030,8 +1026,13 @@ class OnlineEPICorrection(object):
                 mot_flags = []
                 last_reg = reg
                 self.epi_mask=self.inv_resample(
-                    self.mask, last_reg, affine1, data1.shape) > 0
-
+                    self.mask, last_reg, data1.shape) > 0
+            
+                self.apply_transform(
+                    self.transforms[-1],
+                    self.class_coords, self.slg_class_voxels,
+                    self.fmap_values, phase_dim=data1.shape[self.pe_dir])
+                yield reg
             slab_data.append((fr,sl,aff,tt,slice_data))
             data1[...,sl] = slice_data
         if len(slab_data) > 0:
@@ -1042,6 +1043,7 @@ class OnlineEPICorrection(object):
                   np.where(self.slice_order==slab_data[-1][1])[0][0])))
             reg = self._register_slab(self.slabs[-1],slab_data)
             self.transforms.append(reg)
+            yield reg
 
     def _register_slab(self,slab,slab_data):
         nframes = slab[1][0] - slab[0][0] + 1
@@ -1067,11 +1069,11 @@ class OnlineEPICorrection(object):
                 data[...,so,-1] = data[...,so,-2]
 
         reg = self.transforms[-1].copy()
-        self.estimate_instant_motion(data, self.affine, reg)
+        self.estimate_instant_motion(data, reg)
         del data
         return reg
 
-    def estimate_instant_motion(self, data, affine, transform):
+    def estimate_instant_motion(self, data, transform):
         
         if hasattr(self,'cbspline') and \
                 data.shape[-1] > self.cbspline.shape[-1]:
@@ -1085,18 +1087,18 @@ class OnlineEPICorrection(object):
         self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
 
         def f(pc):
-            self._init_energy(pc, data, affine, transform)
+            self._init_energy(pc, data, transform)
             nrgy = self._energy()
             print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
             return nrgy
 
         def fprime(pc):
-            self._init_energy(pc, data, affine, transform)
+            self._init_energy(pc, data, transform)
             return self._energy_gradient()
 
         def fhess(pc):
             print 'fhess'
-            self._init_energy(pc, data, affine, transform)
+            self._init_energy(pc, data, transform)
             return self._energy_hessian()
 
         self._pc = None
@@ -1118,12 +1120,12 @@ class OnlineEPICorrection(object):
         pc = fmin(f, transform.param, *args, **kwargs)
         return pc
 
-    def _init_energy(self, pc, data, affine, transform):
+    def _init_energy(self, pc, data, transform):
         if pc is self._pc:
             return
         transform.param = pc
         self._pc = pc
-        self.sample(data, affine, transform)
+        self.sample(data, transform)
 
         if self.use_derivatives:
             # linearize the data wrt the transform parameters
@@ -1154,22 +1156,22 @@ class OnlineEPICorrection(object):
 
 
 
-    def apply_transform(self, affine, transform, in_coords, out_coords,
+    def apply_transform(self, transform, in_coords, out_coords,
                         fmap_values=None, subset=slice(None), phase_dim=64):
-        ref2fmri = np.linalg.inv(transform.as_affine().dot(affine))
+        ref2fmri = np.linalg.inv(transform.as_affine().dot(self.affine))
         #apply current slice group transform
         out_coords[...,subset,:]=apply_affine(ref2fmri,in_coords[...,subset,:])
         #add shift in phase encoding direction
         if fmap_values != None:
             out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*phase_dim
 
-    def sample(self, data, affine, transform):
+    def sample(self, data, transform):
         """
         sampling points interpolation in EPI data
         """
         sa = self.slice_axis
         nvols = data.shape[-1]
-        ref2fmri = np.linalg.inv(transform.as_affine().dot(affine))
+        ref2fmri = np.linalg.inv(transform.as_affine().dot(self.affine))
         slab = self.slabs[-1]
         
         # if change of test points z is above threshold recompute subset
@@ -1180,7 +1182,7 @@ class OnlineEPICorrection(object):
         
         if recompute_subset:
             self.apply_transform(
-                affine, transform,
+                transform,
                 self.class_coords,self.slg_class_voxels,
                 self.fmap_values, phase_dim=data.shape[self.pe_dir])
 
@@ -1223,7 +1225,7 @@ class OnlineEPICorrection(object):
             print 'new subset %d samples'%self._subsamp.sum()
 
         else:
-            self.apply_transform(affine, transform,
+            self.apply_transform(transform,
                                  self.class_coords,self.slg_class_voxels,
                                  self.fmap_values,self._subsamp,
                                  phase_dim = self.pe_dir)
@@ -1301,11 +1303,11 @@ class OnlineEPICorrection(object):
         cost = (1.0+np.tanh(percent_contrast-bbr_offset)).mean()
         return cost
 
-    def _epi_inv_shiftmap(self, transform, affine, shape):
+    def _epi_inv_shiftmap(self, transform, shape):
         # compute inverse shift map using approximate nearest neighbor
         #
         fmap2fmri = np.linalg.inv(transform.as_affine().dot(
-                affine)).dot( self.fmap.get_affine())
+                self.affine)).dot( self.fmap.get_affine())
         coords = nb.affines.apply_affine(
             fmap2fmri,
             np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
@@ -1326,13 +1328,13 @@ class OnlineEPICorrection(object):
                 inv_shiftmap[c[0],c[1],c[2]] = -s
         return inv_shiftmap
 
-    def inv_resample(self, vol, transform, affine, shape, order=0):
+    def inv_resample(self, vol, transform, shape, order=0):
         grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
         if self.fmap is not None and False:
-            inv_shift = self._epi_inv_shiftmap(transform, affine, shape)
+            inv_shift = self._epi_inv_shiftmap(transform, self.affine, shape)
             grid[...,self.pe_dir] += inv_shift
         epi2vol = np.linalg.inv(vol.get_affine()).dot(
-            transform.as_affine().dot(affine))
+            transform.as_affine().dot(self.affine))
         voxs = nb.affines.apply_affine(epi2vol, grid)
         rvol = map_coordinates(
             vol.get_data(),
