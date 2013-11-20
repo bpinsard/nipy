@@ -176,10 +176,10 @@ class EPIInterpolation(object):
                  slice_trigger_times=None,
                  slice_thickness=None,
                  slice_axis=2,):
-        self.epi, self.fmap, self.mask = epi, fieldmap, mask
+        self.fmap, self.mask = fieldmap, mask
+#        self.epi, self.fmap, self.mask = epi, fieldmap, mask
         self.slice_groups = slice_groups
         self.transforms = transforms
-        self.inv_affine = np.linalg.inv(self.epi.get_affine())
 
         self.slice_axis = slice_axis
         self.slice_order = slice_order
@@ -196,8 +196,8 @@ class EPIInterpolation(object):
             self.fmap_scale = self.pe_sign*echo_spacing* \
                 self.epi.shape[self.pe_dir]/2.0/np.pi
         
-        self.nslices = self.epi.shape[self.slice_axis]
-        self.nvolumes = self.epi.shape[-1]
+#        self.nslices = self.epi.shape[self.slice_axis]
+#        self.nvolumes = self.epi.shape[-1]
 
         #defines bunch of slices for witch same affine is estimated
         if slice_groups == None:
@@ -271,7 +271,9 @@ class EPIInterpolation(object):
                 mz=EXTRAPOLATE_SPACE,
                 mt=EXTRAPOLATE_TIME)
 
-    def resample_volume(self, voxsize=None, reference=None):
+    def resample_volume(self, epi, voxsize=None, reference=None):
+        self.epi = epi
+        self.inv_affine = np.linalg.inv(self.epi.get_affine())
         if reference != None:
             if voxsize == None:
                 voxsize = reference.get_header().get_zooms()[:3]
@@ -975,67 +977,75 @@ class OnlineEPICorrection(object):
         slice_spline = np.empty(data1.shape[:2])
 
         self.mot_ests=[]
+        
+        method='volume'
+        if method is 'volume':
+            for nvol, self.affine, data1 in stack.iter_frame():
+                nreg = last_reg.copy()
+                self.estimate_instant_motion(data1[...,np.newaxis], nreg)
+                self.transforms.append(nreg)
+                last_reg = nreg
+                yield nreg
 
-        for fr,sl,aff,tt,slice_data in stack.iter_slices():
+        elif method is 'detect':
+            for fr,sl,aff,tt,slice_data in stack.iter_slices():
             
-            sl_mask = self.epi_mask[...,sl]
-            
-            slice_voxs_m[:] = np.logical_and(
-                np.all(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.2,0),
-                self._reliable_samples)
-            
+                sl_mask = self.epi_mask[...,sl]
 
-            n_samples = np.count_nonzero(slice_voxs_m)
-            if n_samples < 100:
-                data1[...,sl] = slice_data
-                slab_data.append((fr,sl,aff,tt,slice_data))
-                continue
-            slice_spline[:] = _cspline_transform(slice_data)
-            slice_samples = np.empty((2, n_samples))
-            _cspline_sample2d(
-                slice_samples, slice_data,
-                *self.slg_class_voxels[:,slice_voxs_m][...,slice_axes].T)
-            d0 = self._samples_data[0,slice_voxs_m]/self._samples_data[1,slice_voxs_m]
-            d1 = slice_samples[0]/slice_samples[1]
+                slice_voxs_m[:] = np.logical_and(
+                    np.all(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.2,0),
+                    self._reliable_samples)
+                n_samples = np.count_nonzero(slice_voxs_m)
+                if n_samples < 100:
+                    data1[...,sl] = slice_data
+                    slab_data.append((fr,sl,aff,tt,slice_data))
+                    continue
+                slice_spline[:] = _cspline_transform(slice_data)
+                slice_samples = np.empty((2, n_samples))
+                _cspline_sample2d(
+                    slice_samples, slice_data,
+                    *self.slg_class_voxels[:,slice_voxs_m][...,slice_axes].T)
+                d0 = self._samples_data[0,slice_voxs_m]/self._samples_data[1,slice_voxs_m]
+                d1 = slice_samples[0]/slice_samples[1]
 
-                       
-            vecs = np.diff(
-                self.slg_class_voxels[:,slice_voxs_m][...,slice_axes],1,0)[0]
-            avgmot = ((vecs*(d1-d0)[:,np.newaxis]).mean(0)**2).sum()
-            print fr,sl,'average motion vector length', avgmot
-            mot = avgmot > 1e-3
-            
-#            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .1
-#            mot = scipy.stats.kurtosis(df[sl_mask])>30
-            mot_flags.append(mot)
-            self.mot_ests.append((fr*stack.nslices+sl, avgmot))
 
-            # motion detected and there are sufficient slices in slab
-            if not mot and len(mot_flags)>2 and mot_flags[-2]:
-                self.slabs.append(
-                    ((slab_data[0][0],
-                      np.where(self.slice_order==slab_data[0][1])[0][0]),
-                     (slab_data[-1][0],
-                      np.where(self.slice_order==slab_data[-1][1])[0][0])))
-                reg = self._register_slab(
-                    self.slabs[-1],
-                    slab_data)
+                vecs = np.diff(
+                    self.slg_class_voxels[:,slice_voxs_m][...,slice_axes],1,0)[0]
+                avgmot = ((vecs*(d1-d0)[:,np.newaxis]).mean(0)**2).sum()
+                print fr,sl,'average motion vector length', avgmot
+                mot = avgmot > 1e-3
+
+    #            mot =  np.sqrt(mot[0]**2+mot[1]**2) > .1
+    #            mot = scipy.stats.kurtosis(df[sl_mask])>30
+                mot_flags.append(mot)
+                self.mot_ests.append((fr*stack.nslices+sl, avgmot))
+
+                    # motion detected and there are sufficient slices in slab
+                if mot and len(mot_flags)>2 and mot_flags[-2]:
+                    self.slabs.append(
+                        ((slab_data[0][0],
+                          np.where(self.slice_order==slab_data[0][1])[0][0]),
+                         (slab_data[-1][0],
+                          np.where(self.slice_order==slab_data[-1][1])[0][0])))
+                    reg = self._register_slab(
+                        self.slabs[-1],
+                        slab_data)
 #                    [s for s,m in zip(slab_data,mot_flags) if not m])
-                self.transforms.append(reg)
-                slab_data = []
-                mot_flags = []
-                last_reg = reg
-                self.epi_mask=self.inv_resample(
-                    self.mask, last_reg, data1.shape) > 0
-            
-                self.apply_transform(
-                    self.transforms[-1],
-                    self.class_coords, self.slg_class_voxels,
-                    self.fmap_values, phase_dim=data1.shape[self.pe_dir])
-                yield reg
-            slab_data.append((fr,sl,aff,tt,slice_data))
-            data1[...,sl] = slice_data
-        if len(slab_data) > 0:
+                    self.transforms.append(reg)
+                    slab_data = []
+                    mot_flags = []
+                    last_reg = reg
+                    self.epi_mask=self.inv_resample(
+                        self.mask, last_reg, data1.shape) > 0
+
+                    self.apply_transform(
+                        self.transforms[-1],
+                        self.class_coords, self.slg_class_voxels,
+                        self.fmap_values, phase_dim=data1.shape[self.pe_dir])
+                    yield reg
+                    slab_data.append((fr,sl,aff,tt,slice_data))
+                    data1[...,sl] = slice_data
+        if  len(slab_data) > 0:
             self.slabs.append(
                 ((slab_data[0][0],
                   np.where(self.slice_order==slab_data[0][1])[0][0]),
@@ -1340,3 +1350,27 @@ class OnlineEPICorrection(object):
             vol.get_data(),
             voxs.reshape(-1,3).T, order=order).reshape(shape)
         return rvol
+
+
+class GrayOrdinatesResample(object):
+
+    
+    def __init__(self,
+                 surfaces,
+                 rois,
+                 fieldmap = None,
+                 mask = None,
+
+                 phase_encoding_dir = 1,
+                 repetition_time = 3.0,
+                 slice_repetition_time = None,
+                 echo_time = 0.03,
+                 echo_spacing = 0.0005,
+                 slice_order = None,
+                 interleaved = 0,
+                 slice_trigger_times = None,
+                 slice_thickness = None,
+                 slice_axis = 2 ):
+        
+        
+        
