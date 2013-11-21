@@ -930,7 +930,7 @@ class OnlineEPICorrection(object):
         self._last_vol_subset_ssamp=np.zeros(self.border_nvox, dtype=np.bool)
         self._samples_data = np.empty((2,self.border_nvox))
 
-    def __call__(self, stack):
+    def __call__(self, stack, yield_raw=False):
         
         # dicom list : slices must be provided in acquisition order
 
@@ -985,7 +985,10 @@ class OnlineEPICorrection(object):
                 self.estimate_instant_motion(data1[...,np.newaxis], nreg)
                 self.transforms.append(nreg)
                 last_reg = nreg
-                yield nreg
+                if yield_raw:
+                    yield nreg, data1
+                else:
+                    yield nreg
 
         elif method is 'detect':
             for fr,sl,aff,tt,slice_data in stack.iter_slices():
@@ -1351,26 +1354,5 @@ class OnlineEPICorrection(object):
             voxs.reshape(-1,3).T, order=order).reshape(shape)
         return rvol
 
-
-class GrayOrdinatesResample(object):
-
     
-    def __init__(self,
-                 surfaces,
-                 rois,
-                 fieldmap = None,
-                 mask = None,
 
-                 phase_encoding_dir = 1,
-                 repetition_time = 3.0,
-                 slice_repetition_time = None,
-                 echo_time = 0.03,
-                 echo_spacing = 0.0005,
-                 slice_order = None,
-                 interleaved = 0,
-                 slice_trigger_times = None,
-                 slice_thickness = None,
-                 slice_axis = 2 ):
-        
-        
-        
