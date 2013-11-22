@@ -64,7 +64,7 @@ class EPIOnlineResample(object):
         self.slice_thickness = slice_thickness
 
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
-        self._fmap_values = None
+        self._resample_fmap_values = None
 
     def resample(self, data, out, voxcoords,time=None, splines=None):
         if splines is None:
@@ -81,7 +81,7 @@ class EPIOnlineResample(object):
     def _precompute_sample_fmap(self, coords, shape):
         if self.fmap != None:
             interp_coords = apply_affine(self.world2fmap, coords)
-            self._fmap_values = self.fmap_scale * \
+            self._resample_fmap_values = self.fmap_scale * \
                 map_coordinates(self.fmap.get_data(),
                                 interp_coords.reshape(-1,3).T,
                                 order=1).reshape(interp_coords.shape[:-1])
@@ -98,8 +98,8 @@ class EPIOnlineResample(object):
         if len(affines) == 1: #easy, one transform per volume
             wld2epi = np.linalg.inv(affines[0][1])
             interp_coords[:] = apply_affine(wld2epi, coords)
-            if self._fmap_values != None:
-                interp_coords[...,self.pe_dir] += self._fmap_values
+            if self._resample_fmap_values != None:
+                interp_coords[...,self.pe_dir] += self._resample_fmap_values
         else: # we have to solve which transform we sample with
             for sg,trans in affines:
                 wld2epi = np.linalg.inv(trans)
@@ -123,9 +123,6 @@ class EPIOnlineResample(object):
             interp_coords[subset] = tmp_coords[subset]
         self.resample(data, out,interp_coords)
         del interp_coords, tmp_coords, subset
-        if self.fmap != None:
-            del fmap_values
-
 
 class EPIOnlineRealign(EPIOnlineResample):
 
@@ -135,6 +132,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  class_coords,
 
                  fieldmap = None,
+                 fieldmap_reg=None,
                  mask = None,
 
                  phase_encoding_dir = 1,
@@ -160,7 +158,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  min_nsamples_per_slicegroup=100):
 
         super(EPIOnlineRealign,self).__init__(
-                 fieldmap,
+                 fieldmap,fieldmap_reg,
                  mask,
                  phase_encoding_dir ,
                  repetition_time,
@@ -239,6 +237,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             self.mask, last_reg, data1.shape) > 0
 
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
+        
+        yield self.slabs[0], last_reg.as_affine().dot(self.affine), data1
 
         self.apply_transform(
             self.transforms[0],
@@ -620,17 +620,6 @@ class EPIOnlineRealign(EPIOnlineResample):
             vol.get_data(),
             voxs.reshape(-1,3).T, order=order).reshape(shape)
         return rvol
-    
-    def process_volume(stack, out, ref, voxsize):
-        for affine, raw in self.process(stack):
-            
-            yield affine, out
-
-    def process_surface(stack, ref, surface):
-        pass
-    def process_grayordinates(stack, out, surfaces, rois):
-        pass
-
         
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
