@@ -1,6 +1,6 @@
 import numpy as np
 
-import nibabel as nb
+import nibabel as nb, dicom
 from nibabel.affines import apply_affine
 from ...fixes.nibabel import io_orientation
 from ...core.image.image_spaces import (make_xyz_image,
@@ -16,6 +16,7 @@ from ._registration import (_cspline_transform,
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
 import scipy.stats
 from scipy.ndimage.interpolation import map_coordinates
+from .slice_motion import surface_to_samples
 
 
 # Module globals
@@ -29,7 +30,7 @@ STEPSIZE = 1e-6
 SMALL = 1e-20
 MAXITER = 64
 MAXFUN = None
-EXTRAPOLATE_SPACE = 'reflect'
+EXTRAPOLATE_SPACE = 'zero'
 EXTRAPOLATE_TIME = 'nearest'
 
 class EPIOnlineResample(object):
@@ -201,6 +202,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             maxiter=maxiter, maxfun=maxfun)
 
         self.data = np.array([[]])
+        self._percent_contrast = None
         self._last_subsampling_transform = affine_class(np.ones(12)*5)
         self._subset = np.ones(self.border_nvox,dtype=np.bool)
         self._subsamp = np.ones(self.border_nvox,dtype=np.bool)
@@ -277,6 +279,9 @@ class EPIOnlineRealign(EPIOnlineResample):
                     yield slab, nreg.as_affine().dot(self.affine), data1
                 else:
                     yield slab, nreg.as_affine().dot(self.affine), None
+                self.resample(data1[...,np.newaxis],
+                              self._samples_data,
+                              self.slg_class_voxels)
 
         elif method is 'detect':
             for fr,sl,aff,tt,slice_data in stack.iter_slices():
@@ -515,8 +520,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                     np_and_ow(self._first_vol_subset, self._subsamp)
                     np_and_ow(self._last_vol_subset, self._subsamp)
                 
-            print 'new subset %d samples'%self._subsamp.sum()
-
+            self._tmp_nsamples = self._subsamp.sum()
+            print 'new subset %d samples'%self._tmp_nsamples
+            del self._percent_contrast
+            self._percent_contrast = np.empty(self._tmp_nsamples)
         else:
             self.apply_transform(transform,
                                  self.class_coords,self.slg_class_voxels,
@@ -577,10 +584,13 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.use_derivatives = use_derivatives(self.optimizer)
 
     def _energy(self):
-        percent_contrast = 200*np.diff(self.data,1,0)/self.data.sum(0)
-        percent_contrast[np.abs(percent_contrast)<1e-6] = 0
+        sm = self.data.sum(0)
+        self._percent_contrast[:] = 200*np.diff(self.data,1,0)/sm
+        self._percent_contrast[np.abs(sm)<1e-6] = 0
         bbr_offset=0 # TODO add as an option, and add weighting
-        cost = (1.0+np.tanh(percent_contrast-bbr_offset)).mean()
+        bbr_slope=.5
+        reg = np.tanh(self.data-self._samples_data[self._first_vol_subset_ssamp]).mean()
+        cost=(1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset)).mean()
         return cost
 
     def _epi_inv_shiftmap(self, transform, shape):
@@ -623,4 +633,17 @@ class EPIOnlineRealign(EPIOnlineResample):
         
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
-    pass
+
+    def process(self, stack, yield_raw=False):
+        for slab, reg, data in  super(EPIOnlineRealignFilter,self).process(
+            stack,yield_raw=True):
+            cordata = np.empty(data.shape)
+            for sl in xrange(stack.nslices):
+                cordata[...,sl] = data[...,sl]
+            yield slab, reg, cordata
+
+    
+            
+def filenames_to_dicoms(fnames):
+    for f in fnames:
+        yield dicom.read_file(f)
