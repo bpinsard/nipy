@@ -178,7 +178,6 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.nsamples_per_slicegroup = nsamples_per_slicegroup
         self.min_sample_number = min_nsamples_per_slicegroup        
-        self.slg_class_voxels = np.empty(self.class_coords.shape,np.double)
         self.affine_class = affine_class
 
         self.st_ratio = 1
@@ -202,6 +201,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             maxiter=maxiter, maxfun=maxfun)
 
         self.data = np.array([[]])
+        self.slab_class_voxels = np.empty(self.class_coords.shape,np.double)
         self._percent_contrast = None
         self._last_subsampling_transform = affine_class(np.ones(12)*5)
         self._subset = np.ones(self.border_nvox,dtype=np.bool)
@@ -244,12 +244,12 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.apply_transform(
             self.transforms[0],
-            self.class_coords, self.slg_class_voxels,
+            self.class_coords, self.slab_class_voxels,
             self.fmap_values, phase_dim=data1.shape[self.pe_dir])
 
         self.resample(data1[...,np.newaxis],
                       self._samples_data,
-                      self.slg_class_voxels)
+                      self.slab_class_voxels)
         # remove samples that does not have expected contrast (ie sigloss)
         self._reliable_samples = np.logical_and(
             -np.squeeze(np.diff(self._samples_data,1,0)) > 0,
@@ -260,7 +260,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         #initialize the variance to 1st frame all samples' variance
 #        nsamples = np.array(st.nslices)
         
-        slice_voxs_m = np.empty(self.slg_class_voxels.shape[1], np.bool)
+        slice_voxs_m = np.empty(self.slab_class_voxels.shape[1], np.bool)
         slice_axes = np.ones(3, np.bool)
         slice_axes[self.slice_axis] = False
         slice_spline = np.empty(data1.shape[:2])
@@ -281,7 +281,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                     yield slab, nreg.as_affine().dot(self.affine), None
                 self.resample(data1[...,np.newaxis],
                               self._samples_data,
-                              self.slg_class_voxels)
+                              self.slab_class_voxels)
 
         elif method is 'detect':
             for fr,sl,aff,tt,slice_data in stack.iter_slices():
@@ -289,7 +289,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 sl_mask = self.epi_mask[...,sl]
 
                 slice_voxs_m[:] = np.logical_and(
-                    np.all(np.abs(self.slg_class_voxels[...,self.slice_axis]-sl)<.2,0),
+                    np.all(np.abs(self.slab_class_voxels[...,self.slice_axis]-sl)<.2,0),
                     self._reliable_samples)
                 n_samples = np.count_nonzero(slice_voxs_m)
                 if n_samples < 100:
@@ -300,13 +300,13 @@ class EPIOnlineRealign(EPIOnlineResample):
                 slice_samples = np.empty((2, n_samples))
                 _cspline_sample2d(
                     slice_samples, slice_data,
-                    *self.slg_class_voxels[:,slice_voxs_m][...,slice_axes].T)
+                    *self.slab_class_voxels[:,slice_voxs_m][...,slice_axes].T)
                 d0 = self._samples_data[0,slice_voxs_m]/self._samples_data[1,slice_voxs_m]
                 d1 = slice_samples[0]/slice_samples[1]
 
 
                 vecs = np.diff(
-                    self.slg_class_voxels[:,slice_voxs_m][...,slice_axes],1,0)[0]
+                    self.slab_class_voxels[:,slice_voxs_m][...,slice_axes],1,0)[0]
                 avgmot = ((vecs*(d1-d0)[:,np.newaxis]).mean(0)**2).sum()
                 print fr,sl,'average motion vector length', avgmot
                 mot = avgmot > 1e-3
@@ -337,7 +337,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                     self.apply_transform(
                         self.transforms[-1],
-                        self.class_coords, self.slg_class_voxels,
+                        self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=data1.shape[self.pe_dir])
                     yield slab, reg, data1
                     slab_data.append((fr,sl,aff,tt,slice_data))
@@ -481,12 +481,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         if recompute_subset:
             self.apply_transform(
                 transform,
-                self.class_coords,self.slg_class_voxels,
+                self.class_coords,self.slab_class_voxels,
                 self.fmap_values, phase_dim=data.shape[self.pe_dir])
 
             self._last_subsampling_transform = transform.copy()
             # adapt subsampling to keep regular amount of points in each slice
-            zs = self.slg_class_voxels[...,sa].sum(0)/2.
+            zs = self.slab_class_voxels[...,sa].sum(0)/2.
             samples_slice_hist = np.histogram(zs,np.arange(self.nslices+1)-self.st_ratio)
             # this computation is wrong 
             self._subsamp[:] = False
@@ -526,9 +526,9 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._percent_contrast = np.empty(self._tmp_nsamples)
         else:
             self.apply_transform(transform,
-                                 self.class_coords,self.slg_class_voxels,
+                                 self.class_coords,self.slab_class_voxels,
                                  self.fmap_values,self._subsamp,
-                                 phase_dim = self.pe_dir)
+                                 phase_dim = data.shape[self.pe_dir])
 
         nsamples_1vol = np.count_nonzero(self._first_vol_subset_ssamp)
         n_samples = np.count_nonzero(self._subsamp)
@@ -553,20 +553,20 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.resample(
             data[...,0],
             self.data[:,:nsamples_1vol],
-            self.slg_class_voxels[:,self._first_vol_subset_ssamp],
+            self.slab_class_voxels[:,self._first_vol_subset_ssamp],
             self.cbspline[...,0])
         for i in range(1, nvols - (nvols > 1) ):
             seek = nsamples_1vol + n_samples * (i -1)
             self.resample(
                 data[...,i],
                 self.data[:,seek:seek+n_samples],
-                self.slg_class_voxels[:,self._subsamp],
+                self.slab_class_voxels[:,self._subsamp],
                 self.cbspline[...,i])
         if n_samples_lvol > 0:
             self.resample(
                 data[...,nvols-1],
                 self.data[:,-n_samples_lvol:None],
-                self.slg_class_voxels[:,self._last_vol_subset_ssamp],
+                self.slab_class_voxels[:,self._last_vol_subset_ssamp],
                 self.cbspline[...,nvols-1])
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
@@ -589,7 +589,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._percent_contrast[np.abs(sm)<1e-6] = 0
         bbr_offset=0 # TODO add as an option, and add weighting
         bbr_slope=.5
-        reg = np.tanh(self.data-self._samples_data[self._first_vol_subset_ssamp]).mean()
+        #reg = np.tanh(self.data-self._samples_data[self._first_vol_subset_ssamp]).mean()
         cost=(1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset)).mean()
         return cost
 
