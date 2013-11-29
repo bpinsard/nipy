@@ -155,8 +155,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
-                 nsamples_per_slicegroup=2000,
-                 min_nsamples_per_slicegroup=100):
+                 nsamples_per_slab=2000,
+                 min_nsamples_per_slab=100):
 
         super(EPIOnlineRealign,self).__init__(
                  fieldmap,fieldmap_reg,
@@ -176,8 +176,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.bnd_coords, self.class_coords = bnd_coords, class_coords
         self.border_nvox = self.bnd_coords.shape[0]
 
-        self.nsamples_per_slicegroup = nsamples_per_slicegroup
-        self.min_sample_number = min_nsamples_per_slicegroup        
+        self.nsamples_per_slab = nsamples_per_slab
+        self.min_sample_number = min_nsamples_per_slab        
         self.affine_class = affine_class
 
         self.st_ratio = 1
@@ -457,7 +457,7 @@ class EPIOnlineRealign(EPIOnlineResample):
     def apply_transform(self, transform, in_coords, out_coords,
                         fmap_values=None, subset=slice(None), phase_dim=64):
         ref2fmri = np.linalg.inv(transform.as_affine().dot(self.affine))
-        #apply current slice group transform
+        #apply current slab transform
         out_coords[...,subset,:]=apply_affine(ref2fmri,in_coords[...,subset,:])
         #add shift in phase encoding direction
         if fmap_values != None:
@@ -490,7 +490,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             samples_slice_hist = np.histogram(zs,np.arange(self.nslices+1)-self.st_ratio)
             # this computation is wrong 
             self._subsamp[:] = False
-            step = np.floor(self._subsamp.shape[0]/float(self.nsamples_per_slicegroup))
+            step = np.floor(self._subsamp.shape[0]/float(self.nsamples_per_slab))
             self._subsamp[::step] = True
 
             self._first_vol_subset[:] = np.any(
@@ -540,7 +540,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.skip_sg=False
         if n_samples_total < self.min_sample_number:
-            print 'skipping slice group, only %d samples'%n_samples_total
+            print 'skipping slab, only %d samples'%n_samples_total
             self.skip_sg = True
             return
             
@@ -590,7 +590,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         bbr_offset=0 # TODO add as an option, and add weighting
         bbr_slope=.5
         #reg = np.tanh(self.data-self._samples_data[self._first_vol_subset_ssamp]).mean()
-        cost=(1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset)).mean()
+        cost = 1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset).mean()
         return cost
 
     def _epi_inv_shiftmap(self, transform, shape):
@@ -634,6 +634,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
 
+     
+    
     def process(self, stack, yield_raw=False):
         for slab, reg, data in  super(EPIOnlineRealignFilter,self).process(
             stack,yield_raw=True):
