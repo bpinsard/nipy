@@ -147,6 +147,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
                  
+                 init_reg = None,
                  affine_class=Rigid,
                  optimizer=OPTIMIZER,
                  xtol=XTOL,
@@ -179,7 +180,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.nsamples_per_slab = nsamples_per_slab
         self.min_sample_number = min_nsamples_per_slab        
         self.affine_class = affine_class
-
+        self.init_reg = init_reg
         self.st_ratio = 1
 
         # compute fmap values on the surface used for realign
@@ -231,14 +232,15 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.slice_order = stack._slice_order
         self.nslices = stack.nslices
         last_reg = self.affine_class()
+        if self.init_reg is not None:
+            last_reg.from_matrix44(self.init_reg)
         self.slabs.append(((0,0),(0,self.nslices-1)))
 
+        self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
         #suppose first frame was motion free
         self.transforms.append(last_reg)
         self.epi_mask=self.inv_resample(
-            self.mask, last_reg, data1.shape) > 0
-
-        self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
+            self.mask, last_reg.as_affine(), data1.shape) > 0
         
         yield self.slabs[0], last_reg.as_affine().dot(self.affine), data1
 
@@ -352,6 +354,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             self.transforms.append(reg)
             yield reg
 
+    # register a data slab
     def _register_slab(self,slab,slab_data):
         nframes = slab[1][0] - slab[0][0] + 1
         data = np.empty(slab_data[0][-1].shape + \
@@ -380,6 +383,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         del data
         return reg
 
+    # estimate motion on a data volume
     def estimate_instant_motion(self, data, transform):
         
         if hasattr(self,'cbspline') and \
@@ -589,15 +593,23 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._percent_contrast[np.abs(sm)<1e-6] = 0
         bbr_offset=0 # TODO add as an option, and add weighting
         bbr_slope=.5
-        #reg = np.tanh(self.data-self._samples_data[self._first_vol_subset_ssamp]).mean()
         cost = 1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset).mean()
+        # if there is a previous frame registered
+        if len(self.transforms)>0:
+            # compute regularization 
+            # add it to the cost
+            regl = (self.data[1]-self._samples_data[1,self._first_vol_subset_ssamp])**2
+            regl -= regl.mean()
+            regl /= self.data[1].var()
+            print regl.mean(), regl.min(),regl.max(),scipy.stats.skew(regl)
+            print np.tanh(regl.mean())
+            cost += np.tanh(regl.mean())
         return cost
 
-    def _epi_inv_shiftmap(self, transform, shape):
+    def _epi_inv_shiftmap(self, affine, shape):
         # compute inverse shift map using approximate nearest neighbor
         #
-        fmap2fmri = np.linalg.inv(transform.as_affine().dot(
-                self.affine)).dot(self.fmap2world)
+        fmap2fmri = np.linalg.inv(affine.dot(self.fmap2world))
         coords = nb.affines.apply_affine(
             fmap2fmri,
             np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
@@ -618,13 +630,13 @@ class EPIOnlineRealign(EPIOnlineResample):
                 inv_shiftmap[c[0],c[1],c[2]] = -s
         return inv_shiftmap
 
-    def inv_resample(self, vol, transform, shape, order=0):
+    # 
+    def inv_resample(self, vol, affine, shape, order=0):
         grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
         if self.fmap is not None and False:
-            inv_shift = self._epi_inv_shiftmap(transform, self.affine, shape)
+            inv_shift = self._epi_inv_shiftmap(affine, shape)
             grid[...,self.pe_dir] += inv_shift
-        epi2vol = np.linalg.inv(vol.get_affine()).dot(
-            transform.as_affine().dot(self.affine))
+        epi2vol = np.linalg.inv(vol.get_affine()).dot(affine)
         voxs = nb.affines.apply_affine(epi2vol, grid)
         rvol = map_coordinates(
             vol.get_data(),
@@ -633,16 +645,41 @@ class EPIOnlineRealign(EPIOnlineResample):
         
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
-
-     
     
-    def process(self, stack, yield_raw=False):
-        for slab, reg, data in  super(EPIOnlineRealignFilter,self).process(
-            stack,yield_raw=True):
+    def correct(self, realigned, white_mask):
+
+        self._white_means = []
+        for slab, reg, data in realigned:
             cordata = np.empty(data.shape)
-            for sl in xrange(stack.nslices):
-                cordata[...,sl] = data[...,sl]
+            
+            epi_mask = self.inv_resample(self.mask, reg, data.shape, order=0)
+            epi_white = self.inv_resample(white_mask, reg, data.shape, order=1)>=1
+            
+            print '%d white, %d mask'% \
+                (np.count_nonzero(epi_white),np.count_nonzero(epi_mask))
+            
+            vol_white_means = np.squeeze(np.divide(
+                np.apply_over_axes(np.sum,epi_white*data,[0,1]),
+                np.apply_over_axes(np.sum,epi_white,[0,1])))
+            self._white_means.append(vol_white_means)
+            if len(self._white_means)>0:
+                white_diff = vol_white_means-self._white_means[0] 
+                for sl in xrange(data.shape[-1]):
+                    if not np.isnan(white_diff[sl]):
+                        cordata[...,sl] = data[...,sl]-white_diff[sl]
+                    else:
+                        cordata[...,sl] = data[...,sl]
+            else:
+                cordata[:] = data
+                
             yield slab, reg, cordata
+        
+
+    def process(self, stack, *args, **kwargs):
+        stack._init_dataset()
+        self.correct(
+            super(EPIOnlineRealignFilter,self).process(stack, yield_raw=True),
+            *args, **kwargs)
 
     
             
