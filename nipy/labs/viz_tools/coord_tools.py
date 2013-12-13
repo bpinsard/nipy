@@ -7,6 +7,8 @@ Misc tools to find activations and cut on maps
 # Author: Gael Varoquaux <gael dot varoquaux at normalesup dot org>
 # License: BSD
 
+import warnings
+
 # Standard scientific libraries imports (more specific imports are
 # delayed, so that the part module can be used without them).
 import numpy as np
@@ -131,15 +133,61 @@ def get_mask_bounds(mask, affine):
         The affine should be diagonal or diagonal-permuted.
     """
     (xmin, xmax), (ymin, ymax), (zmin, zmax) = get_bounds(mask.shape, affine)
-    x_slice, y_slice, z_slice = ndimage.find_objects(mask)[0]
-    x_width, y_width, z_width = mask.shape
-    xmin, xmax = (xmin + x_slice.start*(xmax - xmin)/x_width,
-                  xmin + x_slice.stop *(xmax - xmin)/x_width)
-    ymin, ymax = (ymin + y_slice.start*(ymax - ymin)/y_width,
-                  ymin + y_slice.stop *(ymax - ymin)/y_width)
-    zmin, zmax = (zmin + z_slice.start*(zmax - zmin)/z_width,
-                  zmin + z_slice.stop *(zmax - zmin)/z_width)
+    slices = ndimage.find_objects(mask)
+    if len(slices) == 0:
+        warnings.warn("empty mask", stacklevel=2)
+    else:
+        x_slice, y_slice, z_slice = slices[0]
+        x_width, y_width, z_width = mask.shape
+        xmin, xmax = (xmin + x_slice.start*(xmax - xmin)/x_width,
+                    xmin + x_slice.stop *(xmax - xmin)/x_width)
+        ymin, ymax = (ymin + y_slice.start*(ymax - ymin)/y_width,
+                    ymin + y_slice.stop *(ymax - ymin)/y_width)
+        zmin, zmax = (zmin + z_slice.start*(zmax - zmin)/z_width,
+                    zmin + z_slice.stop *(zmax - zmin)/z_width)
 
     return xmin, xmax, ymin, ymax, zmin, zmax
- 
 
+
+def get_cut_coords(map3d, slicer='z', n_cuts=12, delta_axis=3):
+    """
+    Heuristically computes 'good' cross-section cut_coords for plot_map(...)
+    call.
+
+    Parameters
+    ----------
+    map3d: 3D array
+        the data under consideration
+    slicer: string, optional (default "z")
+        sectional slicer; possible values are "x", "y", or "z"
+    n_cuts: int, optional (default 12)
+        number of cuts in the plot
+    delta_axis: int, optional (default 3)
+        spacing between cuts
+
+    Returns
+    -------
+    cut_coords: 1D array of length n_cuts
+        the computed cut_coords
+
+    Raises
+    ------
+    AssertionError
+
+    """
+
+    assert slicer in 'xyz'
+
+    axis = 'xyz'.index(slicer)
+
+    axis_axis_max = np.unravel_index(
+        np.abs(map3d).argmax(), map3d.shape)[axis]
+    axis_axis_min = np.unravel_index(
+        (-np.abs(map3d)).argmin(), map3d.shape)[axis]
+    axis_axis_min, axis_axis_max = (min(axis_axis_min, axis_axis_max),
+                              max(axis_axis_max, axis_axis_min))
+    axis_axis_min = min(axis_axis_min, axis_axis_max - delta_axis * n_cuts)
+
+    cut_coords = np.linspace(axis_axis_min, axis_axis_max, n_cuts)
+
+    return cut_coords

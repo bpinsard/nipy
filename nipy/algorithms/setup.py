@@ -8,12 +8,14 @@ def configuration(parent_package='', top_path=None):
 
     config.add_subpackage('tests')
     config.add_subpackage('registration')
+    config.add_subpackage('slicetiming')
     config.add_subpackage('segmentation')
     config.add_subpackage('statistics')
     config.add_subpackage('diagnostics')
     config.add_subpackage('clustering')
     config.add_subpackage('utils')
     config.add_subpackage('graph')
+    config.add_subpackage('group')
 
     return config
 
