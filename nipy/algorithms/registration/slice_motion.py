@@ -118,23 +118,25 @@ def fieldmap_to_sigloss(fieldmap,mask,echo_time,slicing_axis=2,scaling=1):
 
 # estime sigloss in EPI space using fieldmap with another sampling.
 # modified from FSL sigloss
-def compute_sigloss(fieldmap,mask,
+def compute_sigloss(fieldmap, fmap_reg,
+                    mask,
                     reg,fmat,pts,
                     echo_time,slicing_axis=2,order=0):
     fmri2wld = reg.dot(fmat)
+    wld2fmap = np.linalg.inv(fmap_reg.dot(fieldmap.get_affine()))
     shift_points = np.empty(pts.shape+(2,))
     sv = np.zeros(3)
     sv[slicing_axis] = 1
     world_shift = fmri2wld[:3,:3].dot(sv)
     shift_points[...,0] = nb.affines.apply_affine(
-        np.linalg.inv(fieldmap.get_affine()),
+        wld2fmap,
         pts-world_shift[np.newaxis,np.newaxis,np.newaxis,:])
     shift_points[...,1] = nb.affines.apply_affine(
-        np.linalg.inv(fieldmap.get_affine()), 
+        wld2fmap,
         pts+world_shift[np.newaxis,np.newaxis,np.newaxis,:])
-    tmp = fieldmap.get_data()
+    tmp = fieldmap.get_data().copy()
     tmp[mask==0] = np.nan
-    pts = nb.affines.apply_affine(np.linalg.inv(fieldmap.get_affine()),pts)
+    pts = nb.affines.apply_affine(wld2fmap,pts)
     fmap_values = map_coordinates(
         tmp, np.concatenate((
                 np.rollaxis(pts,-1,0)[...,np.newaxis],
@@ -151,7 +153,7 @@ def compute_sigloss(fieldmap,mask,
     im = 0.5 * (sinc[...,0]*np.sin(theta[...,0])+
                 sinc[...,1]*np.sin(theta[...,1]))
     sigloss = np.sqrt(re**2+im**2).astype(fieldmap.get_data_dtype())
-    del lrgradients, sinc, theta, re, im, pts, fmap_values
+    del lrgradients, sinc, theta, re, im, pts, fmap_values, tmp
     sigloss[np.isnan(sigloss)]=0
     return sigloss
 

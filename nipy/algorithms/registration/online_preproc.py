@@ -16,7 +16,7 @@ from ._registration import (_cspline_transform,
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion
 import scipy.stats
 from scipy.ndimage.interpolation import map_coordinates
-from .slice_motion import surface_to_samples
+from .slice_motion import surface_to_samples, compute_sigloss
 
 
 # Module globals
@@ -60,6 +60,7 @@ class EPIOnlineResample(object):
         self.pe_sign = int(phase_encoding_dir > 0)*2-1
         self.pe_dir = abs(phase_encoding_dir)
         self.repetition_time = repetition_time
+        self.echo_time = echo_time
         self.slice_tr = slice_repetition_time
         self.interleaved = int(interleaved)
         self.slice_trigger_times = slice_trigger_times
@@ -148,7 +149,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
                  
-                 motion_regularization = 1e-2,
+                 motion_regularization = 0,#1e-2,
                  init_reg = None,
                  affine_class=Rigid,
                  optimizer=OPTIMIZER,
@@ -208,7 +209,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.data = np.array([[]])
         self.slab_class_voxels = np.empty(self.class_coords.shape,np.double)
         self._percent_contrast = None
-        self._last_subsampling_transform = affine_class(np.ones(12)*5)
         self._subset = np.ones(self.border_nvox,dtype=np.bool)
         self._subsamp = np.ones(self.border_nvox,dtype=np.bool)
         self._first_vol_subset = np.zeros(self.border_nvox, dtype=np.bool)
@@ -221,6 +221,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.slabs = []
         self.transforms = []
+        self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
         
         # dicom list : slices must be provided in acquisition order
 
@@ -228,8 +229,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         mot_flags = []
         nvox_min = 128
         slab_min_slice = 5 # arbitrary...
-
-        self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
 
         # register first frame
         _, self.affine, data1 = stack.iter_frame().next()
@@ -255,9 +254,29 @@ class EPIOnlineRealign(EPIOnlineResample):
                       self._samples_data,
                       self.slab_class_voxels)
         # remove samples that does not have expected contrast (ie sigloss)
-        self._reliable_samples = np.logical_and(
-            np.squeeze(np.diff(self._samples_data,1,0)) < 0,
-            np.all(self._samples_data>0,0))
+
+        if not self.fmap is None:
+            grid = apply_affine(
+                np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+                np.rollaxis(
+                    np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
+            fmap_mask = map_coordinates(
+                self.mask.get_data(),
+                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape)
+            self._samples_sigloss = compute_sigloss(
+                self.fmap, self.fieldmap_reg,
+                fmap_mask,
+                last_reg.as_affine(), self.affine, 
+                self.class_coords.reshape(-1,3),
+                self.echo_time, slicing_axis=self.slice_axis).reshape(2,-1)
+
+            self._reliable_samples = np.logical_and(
+                np.all(self._samples_sigloss>.8,0),
+                np.all(self._samples_data>0,0))
+        else:
+            self._reliable_samples = np.logical_and(
+                np.squeeze(np.diff(self._samples_data,1,0)) < 0,
+                np.all(self._samples_data>0,0))
 
         # reestimate first frame registration  with only reliable samples
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
@@ -402,7 +421,6 @@ class EPIOnlineRealign(EPIOnlineResample):
                 _cspline_transform(data[:, :, :, t])
 
         self.sample(data, transform, force_recompute_subset=True)
-        self._last_subsampling_transform = self.affine_class(np.ones(12)*5)
 
         def f(pc):
             self._init_energy(pc, data, transform)
@@ -507,9 +525,11 @@ class EPIOnlineRealign(EPIOnlineResample):
             
             
             if hasattr(self,'_reliable_samples'):
-                self._subsamp[:] = self._reliable_samples
+                step = np.floor(np.count_nonzero(self._reliable_samples)/
+                                float(self.nsamples_per_slab))
+                self._subsamp[np.where(self._reliable_samples)[0][::step]] = True
             else:
-                step = np.floor(self._subsamp.shape[0]//
+                step = np.floor(self._subsamp.shape[0]/
                                 float(self.nsamples_per_slab))
                 self._subsamp[::step] = True
             self._first_vol_subset[:] = np.any(
@@ -605,8 +625,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         sm = self.data.sum(0)
         self._percent_contrast[:] = 200*np.diff(self.data,1,0)/sm
         self._percent_contrast[np.abs(sm)<1e-6] = 0
-        bbr_offset=0 # TODO add as an option, and add weighting
-        bbr_slope=.5
+        bbr_offset = 0 # TODO add as an option, and add weighting
+        bbr_slope = 1
         cost = 1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset).mean()
         # if there is a previous frame registered
         if len(self.transforms)>0 and True:
@@ -615,10 +635,13 @@ class EPIOnlineRealign(EPIOnlineResample):
 #            self.data[:np.count_nonzero(self._first_vol_subset_ssamp)]
 #            regl = (self.data[1]-self._samples_data[1,self._first_vol_subset_ssamp]).std()/(self.data[1].std()*self._samples_data[1,self._first_vol_subset_ssamp].std())
             #cost += np.tanh(100*regl)
-            #parameter regularization 
+            # REGULARIZATIOn
+            # should extend this to higher dimensional regularization
+            # to be tested for sub volume slabs
+            # penalize small motion
             param_diff = np.abs(self._pc-self.transforms[-1].param)
-            print np.tanh(param_diff).sum()*self._motion_regularization#,  regl, np.tanh(100*regl), 
-            cost += np.tanh(param_diff).sum()*self._motion_regularization
+            print np.tanh(10*param_diff).sum()*self._motion_regularization#,  regl, np.tanh(100*regl), 
+            cost += np.tanh(10*param_diff).sum()*self._motion_regularization
         return cost
 
     def _epi_inv_shiftmap(self, affine, shape):
