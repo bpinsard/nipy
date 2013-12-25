@@ -233,6 +233,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         # register first frame
         frame_iterator = stack.iter_frame()
         _, self.affine, data1 = frame_iterator.next()
+        data1 = data1.astype(np.float)
         self.slice_order = stack._slice_order
         self.nslices = stack.nslices
         last_reg = self.affine_class()
@@ -253,7 +254,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.resample(data1[...,np.newaxis],
                       self._samples_data,
-                      self.slab_class_voxels)
+                      self.slab_class_voxels,
+                      self.cbspline[...,0])
         # remove samples that does not have expected contrast (ie sigloss)
 
         if not self.fmap is None:
@@ -267,7 +269,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._samples_sigloss = compute_sigloss(
                 self.fmap, self.fieldmap_reg,
                 fmap_mask,
-                last_reg.as_affine(), self.affine, 
+                last_reg.as_affine(), self.affine,
                 self.class_coords.reshape(-1,3),
                 self.echo_time, slicing_axis=self.slice_axis).reshape(2,-1)
 
@@ -288,7 +290,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.transforms.append(last_reg)
         self.resample(data1[...,np.newaxis],
                       self._samples_data,
-                      self.slab_class_voxels)
+                      self.slab_class_voxels,
+                      self.cbspline[...,0])
         yield self.slabs[0], last_reg.as_affine().dot(self.affine), data1
         
         slice_voxs_m = np.empty(self.slab_class_voxels.shape[1], np.bool)
@@ -300,11 +303,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         method='volume'
         if method is 'volume':
-            for nvol, self.affine, data1 in frame_iterator:
-                nreg = last_reg.copy()
+            for nvol, self.affine, data1[:] in frame_iterator:
+                print 'volume %d'%nvol
+                nreg = self.affine_class(last_reg.as_affine())
                 self.estimate_instant_motion(data1[...,np.newaxis], nreg)
                 self.transforms.append(nreg)
-                last_reg = nreg.copy()
+                last_reg = nreg
                 slab = ((nvol,0),(nvol,self.nslices))
                 self.slabs.append(slab)
                 if yield_raw:
@@ -313,7 +317,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                     yield slab, nreg.as_affine().dot(self.affine), None
                 self.resample(data1[...,np.newaxis],
                               self._samples_data,
-                              self.slab_class_voxels)
+                              self.slab_class_voxels,
+                              self.cbspline[...,0])
 
         elif method is 'detect':
             for fr,sl,aff,tt,slice_data in stack.iter_slices():
@@ -416,7 +421,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         if np.count_nonzero(np.isnan(data)) > 0:
             crashboumbang()
 
-        reg = self.transforms[-1].copy()
+        reg = self.affine_class(self.transforms[-1].as_affine())
         self.estimate_instant_motion(data, reg)
         del data
         return reg
