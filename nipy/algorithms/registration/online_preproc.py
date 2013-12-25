@@ -23,10 +23,10 @@ from .slice_motion import surface_to_samples, compute_sigloss
 SLICE_ORDER = 'ascending'
 INTERLEAVED = None
 OPTIMIZER = 'powell'
-XTOL = 1e-5
-FTOL = 1e-5
-GTOL = 1e-5
-STEPSIZE = 1e-6
+XTOL = 1e-6
+FTOL = 1e-6
+GTOL = 1e-6
+STEPSIZE = 1e-2
 SMALL = 1e-20
 MAXITER = 64
 MAXFUN = None
@@ -104,7 +104,7 @@ class EPIOnlineResample(object):
             if self._resample_fmap_values != None:
                 interp_coords[...,self.pe_dir] += self._resample_fmap_values
         else: # we have to solve which transform we sample with
-            for sg,trans in affines:
+            for slab,trans in affines:
                 wld2epi = np.linalg.inv(trans)
                 tmp_coords[:] = apply_affine(wld2epi, coords)
                 if self.fmap != None:
@@ -112,11 +112,11 @@ class EPIOnlineResample(object):
                 subset.fill(False)
                     
                 if sg[0][0]==t and sg[1][0]==t:
-                    times = np.arange(sg[0][1],sg[1][1])
+                    times = np.arange(slab[0][1],slab[1][1])
                 elif sg[0][0]==t:
-                    times = np.arange(sg[0][1], self.nslices)
+                    times = np.arange(slab[0][1], self.nslices)
                 elif sg[1][0]==t:
-                    times = np.arange(sg[0][1], self.nslices)
+                    times = np.arange(slab[0][1], self.nslices)
                 else:
                     times = np.arange(0, self.nslices)
                 subset = np.any(
@@ -149,7 +149,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
                  
-                 motion_regularization = 0,#1e-2,
+                 motion_regularization = 0,# 1e-3,
                  init_reg = None,
                  affine_class=Rigid,
                  optimizer=OPTIMIZER,
@@ -231,7 +231,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         slab_min_slice = 5 # arbitrary...
 
         # register first frame
-        _, self.affine, data1 = stack.iter_frame().next()
+        frame_iterator = stack.iter_frame()
+        _, self.affine, data1 = frame_iterator.next()
         self.slice_order = stack._slice_order
         self.nslices = stack.nslices
         last_reg = self.affine_class()
@@ -278,6 +279,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                 np.squeeze(np.diff(self._samples_data,1,0)) < 0,
                 np.all(self._samples_data>0,0))
 
+        self.optimizer='cg'
+#        self.use_derivatives = True
+#        self.optimizer_kwargs.setdefault('gtol', 1e-7)
+
         # reestimate first frame registration  with only reliable samples
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
         self.transforms.append(last_reg)
@@ -295,12 +300,13 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         method='volume'
         if method is 'volume':
-            for nvol, self.affine, data1 in stack.iter_frame():
+            for nvol, self.affine, data1 in frame_iterator:
                 nreg = last_reg.copy()
                 self.estimate_instant_motion(data1[...,np.newaxis], nreg)
                 self.transforms.append(nreg)
-                last_reg = nreg
+                last_reg = nreg.copy()
                 slab = ((nvol,0),(nvol,self.nslices))
+                self.slabs.append(slab)
                 if yield_raw:
                     yield slab, nreg.as_affine().dot(self.affine), data1
                 else:
@@ -361,6 +367,13 @@ class EPIOnlineRealign(EPIOnlineResample):
                         self.transforms[-1],
                         self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=data1.shape[self.pe_dir])
+                    
+                    if slab[0][1] > 0:
+                        yield (self.slabs[-2],), nreg.as_affine().dot(self.affine), slab
+                    for fr in range(slab[0][0],
+                                    slab[1][0]+(slab[1][1]==stack.nslices)):
+                        pass
+                        
                     yield slab, nreg.as_affine().dot(self.affine), data1
                 slab_data.append((fr,sl,aff,tt,slice_data))
                 data1[...,sl] = slice_data
@@ -440,8 +453,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._pc = None
         fmin, args, kwargs =\
             configure_optimizer(self.optimizer,
-                                fprime=fprime,
-                                fhess=fhess,
+#                                fprime=fprime,
+#                                fhess=fhess,
                                 **self.optimizer_kwargs)
 
         pc = fmin(f, transform.param, *args, **kwargs)
@@ -457,31 +470,42 @@ class EPIOnlineRealign(EPIOnlineResample):
         if self.use_derivatives:
             # linearize the data wrt the transform parameters
             # use the auxiliary array to save the current resampled data
-            self._aux = self.data
+            if hasattr(self,'_aux') and self._aux.shape != self.data.shape:
+                del self._aux
+            if not hasattr(self,'_aux'):
+                self._aux = np.empty(self.data.shape)
+            self._aux[:] = self.data[:]
             nrgy = self._energy()
             print 'energy %f'% nrgy
-            basis = np.eye(pc.size,dtype=np.bool)
+            basis = np.eye(pc.size)
             A=np.zeros((pc.size,pc.size))
-            A2=np.zeros(pc.size)
+            t2 = self.affine_class()
             for j in range(pc.size):
                 for k in range(j,pc.size):
-                    self.set_transform(self._t, 
-                                       pc + self.stepsize*(basis[j]+basis[k]))
+                    t2.param = pc + self.stepsize*(basis[j]+basis[k])
+                    self.sample(data, t2)
                     A[j,k]=self._energy()
-                self.set_transform(self._t, pc - self.stepsize*basis[j])
-                A2[j]=self._energy()
+                t2.param = pc + self.stepsize*basis[j]
+                self.sample(data, t2)
+                A[j,j] = self._energy() 
             
-            self.data = self._aux
+            self.data[:] = self._aux[:]
             # pre-compute gradient and hessian of numerator and
             # denominator
             tril = np.tri(pc.size, k=-1,dtype=np.bool)
-            self._dV = (A.diagonal() - nrgy)/self.stepsize*2.0
+            self._dV = (A.diagonal() - nrgy)/self.stepsize
             self._H = ((A-A.diagonal()-A.diagonal()[:,np.newaxis]+nrgy)*tril.T+
                        np.diag(((A.diagonal()-A2)/2-(A.diagonal()-nrgy))) )* 2.0/self.stepsize
-
             self._H[tril] = self._H.T[tril]
 
 
+    def _energy_gradient(self):
+        print 'gradient', self._dV
+        return self._dV
+
+    def _energy_hessian(self):
+        print 'hessian',self._H
+        return self._H
 
     def apply_transform(self, transform, in_coords, out_coords,
                         fmap_values=None, subset=slice(None), phase_dim=64):
@@ -516,7 +540,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._last_subsampling_transform = transform.copy()
             # adapt subsampling to keep regular amount of points in each slice
             zs = self.slab_class_voxels[...,sa].sum(0)/2.
-            samples_slice_hist = np.histogram(zs,np.arange(self.nslices+1)-self.st_ratio)
+            #samples_slice_hist = np.histogram(zs,np.arange(self.nslices+1)-self.st_ratio)
 
             np_and_ow = lambda x,y: np.logical_and(x,y,y)
 
@@ -532,6 +556,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 step = np.floor(self._subsamp.shape[0]/
                                 float(self.nsamples_per_slab))
                 self._subsamp[::step] = True
+
             self._first_vol_subset[:] = np.any(
                 np.abs(zs[:,np.newaxis]-self.slice_order[
                         np.arange(slab[0][1],self.nslices)][np.newaxis]
@@ -574,12 +599,13 @@ class EPIOnlineRealign(EPIOnlineResample):
         n_samples_total = nsamples_1vol + n_samples_lvol +\
             n_samples * max(nvols-2, 0)
 
-        self.skip_sg=False
+        self.skip_slab=False
         if n_samples_total < self.min_sample_number:
             print 'skipping slab, only %d samples'%n_samples_total
-            self.skip_sg = True
+            self.skip_slab = True
             return
             
+
         # if subsampling changes
         if self.data.shape[1] != n_samples_total:
             del self.data
@@ -629,7 +655,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         bbr_slope = 1
         cost = 1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset).mean()
         # if there is a previous frame registered
-        if len(self.transforms)>0 and True:
+        if len(self.transforms)>0 and False:
             # compute regularization 
             # add it to the cost
 #            self.data[:np.count_nonzero(self._first_vol_subset_ssamp)]
@@ -640,10 +666,10 @@ class EPIOnlineRealign(EPIOnlineResample):
             # to be tested for sub volume slabs
             # penalize small motion
             param_diff = np.abs(self._pc-self.transforms[-1].param)
-            print np.tanh(10*param_diff).sum()*self._motion_regularization#,  regl, np.tanh(100*regl), 
-            cost += np.tanh(10*param_diff).sum()*self._motion_regularization
+            print np.tanh(param_diff).sum()*self._motion_regularization
+            cost += np.tanh(param_diff).sum()*self._motion_regularization
         return cost
-
+    
     def _epi_inv_shiftmap(self, affine, shape):
         # compute inverse shift map using approximate nearest neighbor
         #
@@ -681,6 +707,25 @@ class EPIOnlineRealign(EPIOnlineResample):
             voxs.reshape(-1,3).T, order=order).reshape(shape)
         return rvol
         
+
+    def explore_cost(self, data, transform, values, bbr_slope=.5, bbr_offset=0, factor=200):
+        costs = np.empty((len(transform.param),len(values)))
+        self.sample(data, transform, force_recompute_subset=True)
+        t2 = transform.copy()
+        for p in range(len(transform.param)):
+            for idx,delta in enumerate(values):
+                params = transform.param.copy()
+                params[p] += delta
+                t2.param = params
+                n.sample(data, t2)
+                sm = n.data.sum(0)
+                n._percent_contrast[:] = factor*np.diff(n.data,1,0)/sm
+                n._percent_contrast[np.abs(sm)<1e-6] = 0
+                costs[p,idx] = 1.0+np.tanh(bbr_slope*n._percent_contrast-bbr_offset).mean()
+                print params, costs[p,idx]
+        return costs
+                
+
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
     
