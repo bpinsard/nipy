@@ -23,9 +23,9 @@ from .slice_motion import surface_to_samples, compute_sigloss
 SLICE_ORDER = 'ascending'
 INTERLEAVED = None
 OPTIMIZER = 'powell'
-XTOL = 1e-6
-FTOL = 1e-6
-GTOL = 1e-6
+XTOL = 1e-5
+FTOL = 1e-5
+GTOL = 1e-5
 STEPSIZE = 1e-2
 SMALL = 1e-20
 MAXITER = 64
@@ -58,7 +58,7 @@ class EPIOnlineResample(object):
         self.slice_axis = slice_axis
         self.slice_order = slice_order
         self.pe_sign = int(phase_encoding_dir > 0)*2-1
-        self.pe_dir = abs(phase_encoding_dir)
+        self.pe_dir = abs(phase_encoding_dir)-1
         self.repetition_time = repetition_time
         self.echo_time = echo_time
         self.slice_tr = slice_repetition_time
@@ -149,7 +149,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
                  
-                 motion_regularization = 0,# 1e-3,
+                 motion_regularization = 0,#1e-3,
                  init_reg = None,
                  affine_class=Rigid,
                  optimizer=OPTIMIZER,
@@ -345,7 +345,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                     self._samples_data[:,slice_voxs_m].std(1))
                 
                 print fr, sl, 'class_nc', class_nc, slice_samples.shape
-                mot = class_nc[1] > .02
+                mot = class_nc[1] > .021
 
                 mot_flags.append(mot)
 
@@ -372,13 +372,14 @@ class EPIOnlineRealign(EPIOnlineResample):
                         self.transforms[-1],
                         self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=data1.shape[self.pe_dir])
-                    
+
+                    """                    
                     if slab[0][1] > 0:
                         yield (self.slabs[-2],), nreg.as_affine().dot(self.affine), slab
                     for fr in range(slab[0][0],
                                     slab[1][0]+(slab[1][1]==stack.nslices)):
                         pass
-                        
+                        """                     
                     yield slab, nreg.as_affine().dot(self.affine), data1
                 slab_data.append((fr,sl,aff,tt,slice_data))
                 data1[...,sl] = slice_data
@@ -660,19 +661,18 @@ class EPIOnlineRealign(EPIOnlineResample):
         bbr_slope = 1
         cost = 1.0+np.tanh(bbr_slope*self._percent_contrast-bbr_offset).mean()
         # if there is a previous frame registered
-        if len(self.transforms)>0 and False:
+        if len(self.transforms)>0:
             # compute regularization 
             # add it to the cost
 #            self.data[:np.count_nonzero(self._first_vol_subset_ssamp)]
 #            regl = (self.data[1]-self._samples_data[1,self._first_vol_subset_ssamp]).std()/(self.data[1].std()*self._samples_data[1,self._first_vol_subset_ssamp].std())
             #cost += np.tanh(100*regl)
             # REGULARIZATIOn
-            # should extend this to higher dimensional regularization
             # to be tested for sub volume slabs
             # penalize small motion
-            param_diff = np.abs(self._pc-self.transforms[-1].param)
-            print np.tanh(param_diff).sum()*self._motion_regularization
-            cost += np.tanh(param_diff).sum()*self._motion_regularization
+            if self._motion_regularization>0:
+                param_diff = np.abs(self._pc-self.transforms[-1].param)
+                cost += np.tanh(param_diff).sum()*self._motion_regularization
         return cost
     
     def _epi_inv_shiftmap(self, affine, shape):
@@ -699,7 +699,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 inv_shiftmap[c[0],c[1],c[2]] = -s
         return inv_shiftmap
 
-    # 
+    
     def inv_resample(self, vol, affine, shape, order=0):
         grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
         if self.fmap is not None and False:
