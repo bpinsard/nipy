@@ -666,7 +666,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             # add it to the cost
 #            self.data[:np.count_nonzero(self._first_vol_subset_ssamp)]
 #            regl = (self.data[1]-self._samples_data[1,self._first_vol_subset_ssamp]).std()/(self.data[1].std()*self._samples_data[1,self._first_vol_subset_ssamp].std())
-            #cost += np.tanh(100*regl)
+#            print regl, np.tanh(100*regl)
+#            cost += np.tanh(100*regl)
             # REGULARIZATIOn
             # to be tested for sub volume slabs
             # penalize small motion
@@ -736,6 +737,20 @@ class EPIOnlineRealignFilter(EPIOnlineRealign):
     
     def correct(self, realigned, white_mask):
 
+        import SimpleITK as sitk
+        n4filt = sitk.N4BiasFieldCorrectionImageFilter()
+        for slab, reg, data in realigned:
+            epi_mask=self.inv_resample(self.mask, reg, data.shape)
+            itkmask = sitk.GetImageFromArray(epi_mask.astype(np.int64))
+            itkdata = sitk.GetImageFromArray(data.astype(np.float))
+            try:
+                cordata = n4filt.Execute(itkdata, itkmask)
+            except RuntimeError:
+                print 'boum crash why??'
+                cordata = n4filt.Execute(itkdata, itkmask)
+            yield slab, reg, sitk.GetArrayFromImage(cordata)
+
+        """
         self._white_means = []
         for slab, reg, data in realigned:
             cordata = np.empty(data.shape)
@@ -757,7 +772,7 @@ class EPIOnlineRealignFilter(EPIOnlineRealign):
                     if not np.isnan(white_diff[sl]):
                         cordata[...,sl] = data[...,sl]-white_diff[sl]
             yield slab, reg, cordata
-        
+            """
 
     def process(self, stack, *args, **kwargs):
         stack._init_dataset()
