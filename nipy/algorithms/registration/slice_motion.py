@@ -130,8 +130,8 @@ def compute_sigloss(fieldmap, fmap_reg,
     world_shift = fmri2wld[:3,:3].dot(sv)
     fmap_shift = wld2fmap[:3,:3].dot(world_shift)
     shift_points[:] = nb.affines.apply_affine(wld2fmap, pts)[...,np.newaxis]
-    shift_points[...,0] -= fmap_shift[np.newaxis,np.newaxis,np.newaxis,:]
-    shift_points[...,1] += fmap_shift[np.newaxis,np.newaxis,np.newaxis,:]
+    shift_points[...,0] -= fmap_shift
+    shift_points[...,1] += fmap_shift
     tmp = fieldmap.get_data().copy()
     tmp[mask==0] = np.nan
     pts = nb.affines.apply_affine(wld2fmap,pts)
@@ -168,8 +168,8 @@ def intensity_factor(fieldmap, fmap_reg,
     world_shift = fmri2wld[:3,:3].dot(sv)
     fmap_shift = wld2fmap[:3,:3].dot(world_shift)
     shift_points[:] = nb.affines.apply_affine(wld2fmap, pts)[...,np.newaxis]
-    shift_points[...,0] -= fmap_shift[np.newaxis,np.newaxis,np.newaxis,:]
-    shift_points[...,1] += fmap_shift[np.newaxis,np.newaxis,np.newaxis,:]
+    shift_points[...,0] -= fmap_shift
+    shift_points[...,1] += fmap_shift
 
     tmp = fieldmap.get_data().copy()
     tmp[mask==0] = np.nan
