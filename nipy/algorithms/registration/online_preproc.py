@@ -82,13 +82,23 @@ class EPIOnlineResample(object):
 
 
     def _precompute_sample_fmap(self, coords, shape):
-        if self.fmap != None:
-            interp_coords = apply_affine(self.world2fmap, coords)
-            self._resample_fmap_values = self.fmap_scale * \
-                map_coordinates(self.fmap.get_data(),
-                                interp_coords.reshape(-1,3).T,
-                                order=1).reshape(interp_coords.shape[:-1])
-
+        if self.fmap is None:
+            return
+        # if coords or shape changes, recompute values
+        if not self._resample_fmap_values is None and \
+                shape == self._resample_shape_cache and \
+                coords is self._resample_coords_cache:
+            return
+        del self._resample_fmap_values
+        interp_coords = apply_affine(self.world2fmap, coords)
+        self._resample_coords_cache = coords
+        self._resample_shape_cache = shape
+        self._resample_fmap_values = map_coordinates(
+            self.fmap.get_data(),
+            interp_coords.reshape(-1,3).T,
+            order=1).reshape(interp_coords.shape[:-1])
+        self._resample_fmap_values *= self.fmap_scale*shape[self.pe_dir]
+        del interp_coords
 
     def resample_coords(self, data, affines, coords, out):
 
@@ -101,7 +111,7 @@ class EPIOnlineResample(object):
         if len(affines) == 1: #easy, one transform per volume
             wld2epi = np.linalg.inv(affines[0][1])
             interp_coords[:] = apply_affine(wld2epi, coords)
-            if self._resample_fmap_values != None:
+            if not self._resample_fmap_values is None:
                 interp_coords[...,self.pe_dir] += self._resample_fmap_values
         else: # we have to solve which transform we sample with
             for slab,trans in affines:
@@ -679,42 +689,91 @@ class EPIOnlineRealign(EPIOnlineResample):
     def _epi_inv_shiftmap(self, affine, shape):
         # compute inverse shift map using approximate nearest neighbor
         #
-        fmap2fmri = np.linalg.inv(affine.dot(self.fmap2world))
+        # caching
+        if hasattr(self,'_inv_shiftmap') and self._inv_shiftmap.shape == shape\
+                and np.allclose(self._invshiftmap_affine,affine):
+            return self._inv_shiftmap
+        self._invshiftmap_affine = affine
+        print 'computing inverse shiftmap'
+
+        fmap2fmri = np.linalg.inv(affine).dot(self.fmap2world)
         coords = nb.affines.apply_affine(
             fmap2fmri,
             np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
         shift = self.fmap_scale * self.fmap.get_data()
         coords[...,self.pe_dir] += shift
-        coords = coords[shift!=0]
-        shift = shift[shift!=0]
-        inv_shiftmap = np.empty(shape)
+#        coords = coords[shift!=0]
+#        shift = shift[shift!=0]
+        if hasattr(self,'_inv_shiftmap'):
+            del self._inv_shiftmap
+        self._inv_shiftmap = np.empty(shape)
         inv_shiftmap_dist = np.empty(shape)
-        inv_shiftmap.fill(np.inf)
+        self._inv_shiftmap.fill(np.inf)
         inv_shiftmap_dist.fill(np.inf)
+        includ = np.logical_and(
+            np.all(coords>-.5,-1),
+            np.all(coords<np.array(shape)[np.newaxis]-.5,-1))
+        coords = coords[includ]
         rcoords = np.round(coords)
         dists = np.sum((coords-rcoords)**2,-1)
+        shift = shift[includ]
         for c,d,s in zip(rcoords,dists,shift):
-            if np.all(c >= 0) and np.all(c < shape) \
-                    and d < inv_shiftmap_dist[c[0],c[1],c[2]] \
-                    and s < inv_shiftmap[c[0],c[1],c[2]]:
-                inv_shiftmap[c[0],c[1],c[2]] = -s
-        return inv_shiftmap
+            if  d < inv_shiftmap_dist[c[0],c[1],c[2]] \
+                    and s < self._inv_shiftmap[c[0],c[1],c[2]]:
+                self._inv_shiftmap[c[0],c[1],c[2]] = -s
+        for x,y,z in zip(*np.where(np.isinf(self._inv_shiftmap))):
+            ngbd = self._inv_shiftmap[
+                max(0,x-1):x+1,max(0,y-1):y+1,max(0,z-1):z+1]
+            self._inv_shiftmap[x,y,z] = ngbd.ravel()[np.argmin(np.abs(ngbd.ravel()))]
+            del ngbd
+        return self._inv_shiftmap
 
     
     def inv_resample(self, vol, affine, shape, order=0):
-        grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
-        if self.fmap is not None and False:
-            inv_shift = self._epi_inv_shiftmap(affine, shape)
-            grid[...,self.pe_dir] += inv_shift
-        epi2vol = np.linalg.inv(vol.get_affine()).dot(affine)
-        voxs = nb.affines.apply_affine(epi2vol, grid)
-        rvol = map_coordinates(
-            vol.get_data(),
-            voxs.reshape(-1,3).T, order=order).reshape(shape)
+        ## resample a undistorted volume to distorted EPI space
+        # order = map_coordinates order, if -1, does integral of voxels in the
+        # higher resolution volume (eg. for partial volume map downsampling)
+        if order == -1:
+            grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]].reshape(3,-1).T
+            vol2epi = np.linalg.inv(affine).dot(vol.get_affine())
+            voxs = nb.affines.apply_affine(vol2epi, grid)
+            if self.fmap is not None:
+                vol2fmap = self.world2fmap.dot(vol.get_affine())
+                fmap_voxs = nb.affines.apply_affine(vol2fmap, grid)
+                fmap_values = self.fmap_scale * map_coordinates(
+                    self.fmap.get_data(),
+                    fmap_voxs.reshape(-1,3).T,
+                    order=1).reshape(fmap_voxs.shape[:-1])
+                del fmap_voxs
+                voxs[:, self.pe_dir] += fmap_values
+                del fmap_values
+            np.round(voxs, out=voxs)
+            nvols = (vol.shape+(1,))[:4][-1]
+            rvol = np.empty(shape+(nvols,))
+            bins = [np.arange(-.5,d+.5) for d in shape]
+            counts, _ = np.histogramdd(voxs,bins)
+            for v in range(nvols):
+                print v
+                rvol[...,v] = np.histogramdd(
+                    voxs, bins,weights=vol.get_data()[...,v].ravel())[0]/counts
+            rvol[np.isnan(rvol)] = 0 
+            del counts, bins
+        else:
+            grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
+            if self.fmap is not None:
+                inv_shift = self._epi_inv_shiftmap(affine, shape)
+                grid[...,self.pe_dir] += inv_shift
+            epi2vol = np.linalg.inv(vol.get_affine()).dot(affine)
+            voxs = nb.affines.apply_affine(epi2vol, grid)
+            rvol = map_coordinates(
+                vol.get_data(),
+                voxs.reshape(-1,3).T, order=order).reshape(shape)
+        del grid, voxs
         return rvol
         
 
-    def explore_cost(self, data, transform, values, bbr_slope=.5, bbr_offset=0, factor=200):
+    def explore_cost(self, data, transform, values,
+                     bbr_slope=.5, bbr_offset=0, factor=200):
         costs = np.empty((len(transform.param),len(values)))
         self.sample(data, transform, force_recompute_subset=True)
         t2 = transform.copy()
@@ -735,8 +794,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 class EPIOnlineRealignFilter(EPIOnlineRealign):
     
-    def correct(self, realigned, white_mask):
-
+    def correct(self, realigned, pvmaps, poly_order = 3):
+        """
         import SimpleITK as sitk
         n4filt = sitk.N4BiasFieldCorrectionImageFilter()
         for slab, reg, data in realigned:
@@ -749,6 +808,42 @@ class EPIOnlineRealignFilter(EPIOnlineRealign):
                 print 'boum crash why??'
                 cordata = n4filt.Execute(itkdata, itkmask)
             yield slab, reg, sitk.GetArrayFromImage(cordata)
+            """
+
+        import itertools
+        init_regs = False
+
+        for slab, reg, data in realigned:
+            if not init_regs:
+                epi_pvf = np.empty(data.shape+(pvmaps.shape[-1],))
+                epi_mask = np.empty(data.shape, dtype=np.bool)
+                cdata = np.zeros(data.shape)
+                ij = itertools.product(range(poly_order+1),range(poly_order+1))
+                x,y = np.mgrid[:data.shape[0],:data.shape[1]]
+                slice_regs = np.empty(x.shape+((poly_order+1)**2,))
+                for k, (i,j) in enumerate(ij):
+                    slice_regs[...,k] = x**i * y**j
+            # should try to use caching for inv resample coords computation
+            print 'compute distorted mask'
+            epi_mask[:] = self.inv_resample(self.mask, reg, data.shape, 1) > .1
+            print 'compute partial volume maps'
+            epi_pvf[:] = self.inv_resample(pvmaps, reg, data.shape, -1)
+            epi_pvf[epi_pvf.sum(-1)==0,-1] = 1
+            epi_mask[epi_pvf[...,:2].sum(-1) > .1] = True
+            for sl in range(data.shape[self.slice_axis]):
+                if np.count_nonzero(epi_mask[...,sl]) > 0:
+                    sl_mask = epi_mask[...,sl]
+                    regs = np.dstack([slice_regs,epi_pvf[...,sl,:]])
+                    logdata = np.log(data[...,sl])
+                    sl_mask[np.isinf(logdata)] = False
+                    regs_pinv = np.linalg.pinv(regs[sl_mask])
+                    betas = regs_pinv.dot(logdata[sl_mask])
+                    cdata[sl_mask,sl] = np.exp(logdata[sl_mask] - \
+                                                   regs[sl_mask].dot(betas))
+#                    cdata[np.isinf(cdata[...,sl]),sl] = 0
+                    del regs, regs_pinv, logdata, betas
+            yield slab, reg, cdata
+            
 
         """
         self._white_means = []
