@@ -193,7 +193,7 @@ class EPIOnlineResample(object):
                 fmap_voxs = nb.affines.apply_affine(vol2fmap, grid)
                 fmap_values = self.fmap_scale * map_coordinates(
                     self.fmap.get_data(),
-                    fmap_voxs.reshape(-1,3).T,
+                    fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
                 del fmap_voxs
                 voxs[:, self.pe_dir] += fmap_values
@@ -800,6 +800,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             self.mask.get_data().astype(np.float32),
             self.mask.get_affine())
         
+        """
         import SimpleITK as sitk
         n4filt = sitk.N4BiasFieldCorrectionImageFilter()
         cordata2 = None
@@ -831,7 +832,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             #### regress pvmaps
             epi_pvf[:] = self.inv_resample(
                 pvmaps, reg, data.shape, -1,
-                mask = pvmaps.get_data()[...,:2].sum(-1)>0)
+                mask = self.mask.get_data()>0)
 
             if False:
                 regs_pinv = np.linalg.pinv(regs[epi_mask])
@@ -861,9 +862,15 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             
             yield slab, reg, cordata2
         return
-
+        """
+    
     #### OLD OPTIONS MIGHT HAVE TO COME BACK TO THIS ######
         import itertools
+        ext_mask = self.mask.get_data()>0
+        ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0] = True
+        float_mask = nb.Nifti1Image(
+            ext_mask.astype(np.float32),
+            self.mask.get_affine())
         init_regs = False        
         for slab, reg, data in realigned:
             shape = data.shape 
@@ -884,21 +891,25 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             epi_mask[:] = self.inv_resample(float_mask, reg, data.shape, 1) > .1
             print 'compute partial volume maps'
             epi_pvf[:] = self.inv_resample(pvmaps, reg, data.shape, -1,
-                                           mask = pvmaps.get_data()[...,:2].sum(-1)>0)
+                                           mask = ext_mask)
             epi_pvf[epi_pvf.sum(-1)==0,-1] = 1 # only useful if fitting whole image
             ############## regressing PV + 2d poly from each slice #######    
             cdata.fill(0)
             for sl in range(data.shape[self.slice_axis]):
                 if np.count_nonzero(epi_mask[...,sl]) > 0:
                     sl_mask = epi_mask[...,sl].copy()
-                    regs = np.dstack([slice_regs,epi_pvf[...,sl,:]])
+                    regs = np.dstack([slice_regs,epi_pvf[...,sl,1:]])
                     regs[np.isinf(regs)]=0
                     logdata = np.log(data[...,sl])
                     sl_mask[np.isinf(logdata)] = False
                     regs_pinv = np.linalg.pinv(regs[sl_mask])
                     betas = regs_pinv.dot(logdata[sl_mask])
+                    print betas
+                    cdata[...,sl] = 0
                     cdata[sl_mask,sl] = np.exp(
                         logdata[sl_mask] - regs[sl_mask].dot(betas))
+#                    cdata[...,sl] = np.exp(
+#                        logdata - regs.dot(betas))
                     cdata[np.isinf(cdata[...,sl]),sl] = 0
                     del regs, regs_pinv, logdata, betas
             yield slab, reg, cdata
