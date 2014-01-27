@@ -158,28 +158,25 @@ def compute_sigloss(fieldmap, fmap_reg,
 
 def intensity_factor(fieldmap, fmap_reg,
                      mask,
-                     reg,fmat,pts,
+                     fmri2wld,pts,
                      shift_factor, pe_dir, order=0):
-    fmri2wld = reg.dot(fmat)
     wld2fmap = np.linalg.inv(fmap_reg.dot(fieldmap.get_affine()))
     shift_points = np.empty(pts.shape+(2,))
     sv = np.zeros(3)
     sv[pe_dir] = 1
     world_shift = fmri2wld[:3,:3].dot(sv)
     fmap_shift = wld2fmap[:3,:3].dot(world_shift)
+    print sv, world_shift, fmap_shift
     shift_points[:] = nb.affines.apply_affine(wld2fmap, pts)[...,np.newaxis]
     shift_points[...,0] -= fmap_shift
     shift_points[...,1] += fmap_shift
 
-    tmp = fieldmap.get_data().copy()
-    tmp[mask==0] = np.nan
     pts = nb.affines.apply_affine(wld2fmap,pts)
     fmap_values = map_coordinates(
-        tmp, np.concatenate(
-            (np.rollaxis(pts,-1,0)[...,np.newaxis],
-             np.rollaxis(shift_points,-2,0)),-1).reshape(3,-1),
+        fieldmap.get_data(), np.rollaxis(shift_points,-2,0).reshape(3,-1),
         order=order,cval=np.nan).reshape(pts.shape[:-1]+(3,))
-    return (fmap_values[...,-1]-fmap_values[...,-2])*shift_factor/2
+    del shift_points, pts
+    return (fmap_values[...,1]-fmap_values[...,0])*shift_factor/2
 
 class EPIInterpolation(object):
 
