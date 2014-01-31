@@ -910,10 +910,10 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     betas = regs_pinv.dot(logdata[sl_mask])
                     #print betas
                     cdata[...,sl] = 0
-#                    cdata[sl_mask,sl] = np.exp(
-#                        logdata[sl_mask] - regs[sl_mask].dot(betas))
-                    cdata[...,sl] = np.exp(
-                        logdata - regs.dot(betas))
+                    cdata[sl_mask,sl] = np.exp(
+                        logdata[sl_mask] - regs[sl_mask].dot(betas))
+#                    cdata[...,sl] = np.exp(
+#                        logdata - regs.dot(betas))
                     regs = epi_pvf[...,sl,1:]
 #                    cdata[np.isinf(cdata[...,sl]),sl] = 0
                     del regs, regs_pinv, logdata, betas
