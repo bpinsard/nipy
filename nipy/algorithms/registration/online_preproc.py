@@ -800,6 +800,50 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             self.mask.get_data().astype(np.float32),
             self.mask.get_affine())
         
+#        do_n4 = True
+
+
+        ext_mask = self.mask.get_data()>0
+        ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0] = True
+        float_mask = nb.Nifti1Image(
+            ext_mask.astype(np.float32),
+            self.mask.get_affine())        
+        from scipy.interpolate import SmoothBivariateSpline
+        spline_order = (4,4)
+        min_vox = np.prod(np.asarray(spline_order)+1)
+        cdata = None
+        for slab, reg, data in realigned:
+            if cdata is None:
+                pts = np.mgrid[:data.shape[0],:data.shape[1]]
+                cdata = np.zeros(data.shape)
+                epi_pvf = np.zeros(data.shape+pvmaps.shape[-1:])
+                epi_mask = np.zeros(data.shape, dtype=np.bool)
+                epi_mask2 = np.zeros(data.shape, dtype=np.bool)
+            epi_mask[:] = self.inv_resample(self.mask, reg, data.shape, 0)
+            epi_mask2[:] = self.inv_resample(float_mask, reg, data.shape, 0)
+            epi_pvf[:] = self.inv_resample(
+                pvmaps, reg, data.shape, -1,
+                mask = self.mask.get_data()>0)
+            for sl in range(data.shape[self.slice_axis]):
+                if np.count_nonzero(epi_mask[...,sl]) < min_vox:# or \
+                        #np.count_nonzero(epi_pvf[...,sl,1]) < np.prod(np.asarray(spline_order)+1):
+                    #cdata[...,sl] = data[...,sl]
+                    continue
+                sl_mask = epi_mask[...,sl].copy()
+                logdata = np.log(data[...,sl])
+                sl_mask[np.isinf(logdata)] = False
+                spline2d = SmoothBivariateSpline(
+                    pts[0,sl_mask],pts[1,sl_mask],
+                    logdata[sl_mask],
+                    w=epi_pvf[sl_mask,sl,1]+1e-2,
+                    kx=spline_order[0],
+                    ky=spline_order[1])
+                fit = spline2d(pts[0,:,0], pts[1,0])
+                cdata[epi_mask2[...,sl],sl] = np.exp(logdata[epi_mask2[...,sl]]-fit[epi_mask2[...,sl]])
+            yield slab, reg, cdata
+        return
+
+
         """
         import SimpleITK as sitk
         n4filt = sitk.N4BiasFieldCorrectionImageFilter()
@@ -828,7 +872,8 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 del cordata, itkdata, itkmask
             else:
                 cordata2[:] = data   
-            
+
+
             #### regress pvmaps
             epi_pvf[:] = self.inv_resample(
                 pvmaps, reg, data.shape, -1,
@@ -859,7 +904,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
 #                        cordata2[np.isinf(cordata2[...,sl]),sl] = 0
                 pcdata[:] = cordata2
                 epi_ppvf[:] = epi_pvf
-            
             yield slab, reg, cordata2
         return
         """
@@ -898,12 +942,15 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             for sl in range(data.shape[self.slice_axis]):
                 if np.count_nonzero(epi_mask[...,sl]) > 0:
                     sl_mask = epi_mask[...,sl].copy()
-                    #regs = np.dstack([slice_regs,np.exp(epi_pvf[...,sl,1:])])
+                    regs = np.dstack([slice_regs,epi_pvf[...,sl,:]])
                     #regs[np.isinf(regs)] = 0
+                    """                    
                     regs = np.dstack([
-                       slice_regs, 
-                       epi_pvf[...,sl,:]*(1-np.exp(-30./np.array([1331,832,4000]))),
-                       epi_pvf[...,sl,:]*np.exp(-30./np.array([85,77,2200]))])
+                            slice_regs, 
+                            1-np.exp(-30./(np.array([1331,832,4000])*\
+                                               epi_pvf[...,sl,:])),
+                            np.exp(-30./(np.array([85,77,2200])*\
+                                             epi_pvf[...,sl,:])) ])"""
                     logdata = np.log(data[...,sl])
                     sl_mask[np.isinf(logdata)] = False
                     regs_pinv = np.linalg.pinv(regs[sl_mask])
