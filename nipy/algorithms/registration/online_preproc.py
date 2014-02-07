@@ -951,16 +951,24 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                                                epi_pvf[...,sl,:])),
                             np.exp(-30./(np.array([85,77,2200])*\
                                              epi_pvf[...,sl,:])) ])"""
+                    #regs = np.dstack([slice_regs,np.exp(epi_pvf[...,sl,1:])])
+                    #regs[np.isinf(regs)] = 0
+                    regs = np.dstack([
+                       slice_regs, 
+                       epi_pvf[...,sl,:]*(1-np.exp(-30./np.array([1331,832,4000]))),
+                       epi_pvf[...,sl,:]*np.exp(-30./np.array([85,77,2200]))])
                     logdata = np.log(data[...,sl])
                     sl_mask[np.isinf(logdata)] = False
                     regs_pinv = np.linalg.pinv(regs[sl_mask])
                     betas = regs_pinv.dot(logdata[sl_mask])
                     #print betas
                     cdata[...,sl] = 0
-                    cdata[sl_mask,sl] = np.exp(
-                        logdata[sl_mask] - regs[sl_mask].dot(betas))
 #                    cdata[...,sl] = np.exp(
 #                        logdata - regs.dot(betas))
+#                    cdata[sl_mask,sl] = np.exp(
+#                        logdata[sl_mask] - regs[sl_mask].dot(betas))
+                    cdata[...,sl] = np.exp(
+                        logdata - regs.dot(betas))
                     regs = epi_pvf[...,sl,1:]
 #                    cdata[np.isinf(cdata[...,sl]),sl] = 0
                     del regs, regs_pinv, logdata, betas
