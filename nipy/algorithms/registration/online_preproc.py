@@ -804,7 +804,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
 
 
         ext_mask = self.mask.get_data()>0
-        ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0] = True
+        ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0.1] = True
         float_mask = nb.Nifti1Image(
             ext_mask.astype(np.float32),
             self.mask.get_affine())        
@@ -847,6 +847,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 fit = spline2d(pts[0,:,0], pts[1,0])
 #                cdata[...,sl] = np.exp(fit)
                 cdata[sl_mask2,sl] = np.exp(logdata[sl_mask2]-fit[sl_mask2])
+                cdata[cdata[...,sl]>10,sl] = 0
 #                regs = epi_pvf[epi_mask2[...,sl],sl,1:]
 ##                regs[:] = (regs - regs.mean(0))/regs.std(0)
 #                regs_pinv = np.linalg.pinv(regs)
