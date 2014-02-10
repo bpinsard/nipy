@@ -830,18 +830,23 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     #cdata[...,sl] = data[...,sl]
                     continue
                 sl_mask = epi_mask[...,sl].copy()
+                sl_mask2 = epi_mask2[...,sl]
                 logdata = np.log(data[...,sl])
                 sl_mask[np.isinf(logdata)] = False
+                aw = np.argwhere(sl_mask2)
+                xmin,ymin = aw.min(0)-5
+                xmax,ymax = aw.max(0)+5
+                bbox = [xmin,xmax,ymin,ymax]
                 spline2d = SmoothBivariateSpline(
                     pts[0,sl_mask],pts[1,sl_mask],
                     logdata[sl_mask],
                     w=epi_pvf[sl_mask,sl,1]+1e-1,
+                    bbox = bbox,
                     kx=spline_order[0],
                     ky=spline_order[1])
                 fit = spline2d(pts[0,:,0], pts[1,0])
-                #cdata[...,sl] = np.exp(fit)
-                cdata[epi_mask2[...,sl],sl] = np.exp(
-                    logdata[epi_mask2[...,sl]]-fit[epi_mask2[...,sl]])
+#                cdata[...,sl] = np.exp(fit)
+                cdata[sl_mask2,sl] = np.exp(logdata[sl_mask2]-fit[sl_mask2])
 #                regs = epi_pvf[epi_mask2[...,sl],sl,1:]
 ##                regs[:] = (regs - regs.mean(0))/regs.std(0)
 #                regs_pinv = np.linalg.pinv(regs)
