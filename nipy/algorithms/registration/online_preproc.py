@@ -145,7 +145,6 @@ class EPIOnlineResample(object):
                 and np.allclose(self._invshiftmap_affine,affine):
             return self._inv_shiftmap
         self._invshiftmap_affine = affine
-        print 'computing inverse shiftmap'
 
         fmap2fmri = np.linalg.inv(affine).dot(self.fmap2world)
         coords = nb.affines.apply_affine(
@@ -825,14 +824,12 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 pvmaps, reg, data.shape, -1,
                 mask = self.mask.get_data()>0)
             for sl in range(data.shape[self.slice_axis]):
-                if np.count_nonzero(epi_mask[...,sl]) < min_vox:# or \
-                        #np.count_nonzero(epi_pvf[...,sl,1]) < np.prod(np.asarray(spline_order)+1):
-                    #cdata[...,sl] = data[...,sl]
-                    continue
                 sl_mask = epi_mask[...,sl].copy()
                 sl_mask2 = epi_mask2[...,sl]
                 logdata = np.log(data[...,sl])
                 sl_mask[np.isinf(logdata)] = False
+                if np.count_nonzero(sl_mask) < min_vox:
+                    continue
                 aw = np.argwhere(sl_mask2)
                 xmin,ymin = aw.min(0)-5
                 xmax,ymax = aw.max(0)+5
