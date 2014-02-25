@@ -823,13 +823,33 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             epi_pvf[...,:-1] = self.inv_resample(
                 pvmaps, reg, data.shape, -1,
                 mask = self.mask.get_data()>0)
+
+            regs = epi_pvf[epi_mask,1:]
+#                regs[:-1] = (regs[:-1] - regs[:-1].mean(0))/regs[:-1].std(0)
+            regs_pinv = np.linalg.pinv(regs)
+            betas = regs_pinv.dot(data[epi_mask])
+            data -= epi_pvf[...,1:-1].dot(betas[:-1])
+
             for sl in range(data.shape[self.slice_axis]):
                 sl_mask = epi_mask[...,sl].copy()
                 sl_mask2 = epi_mask2[...,sl]
+
                 logdata = np.log(data[...,sl])
+                sl_mask[np.isnan(logdata)] = False
                 sl_mask[np.isinf(logdata)] = False
                 if np.count_nonzero(sl_mask) < min_vox:
                     continue
+
+                """
+                regs = epi_pvf[sl_mask,sl,1:]
+#                regs[:-1] = (regs[:-1] - regs[:-1].mean(0))/regs[:-1].std(0)
+                regs_pinv = np.linalg.pinv(regs)
+                betas = regs_pinv.dot(logdata[sl_mask])
+                logdata -= epi_pvf[...,sl,1:].dot(betas)
+#                print betas
+#                logdata = np.log(cdata[...,sl])
+"""
+
                 aw = np.argwhere(sl_mask2)
                 xmin,ymin = aw.min(0)-5
                 xmax,ymax = aw.max(0)+5
@@ -844,12 +864,14 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 fit = spline2d(pts[0,:,0], pts[1,0])
 #                cdata[...,sl] = np.exp(fit)
                 cdata[sl_mask2,sl] = np.exp(logdata[sl_mask2]-fit[sl_mask2])
-                cdata[cdata[...,sl]>10,sl] = 0
-#                regs = epi_pvf[epi_mask2[...,sl],sl,1:]
-##                regs[:] = (regs - regs.mean(0))/regs.std(0)
+                cdata[np.isinf(cdata[...,sl]),sl] = 0
+                cdata[-sl_mask2,sl] = 0
+#                cdata[cdata[...,sl]>10,sl] = 0
+#                regs = epi_pvf[sl_mask2,sl,1:]
+#                regs[:] = (regs - regs.mean(0))/regs.std(0)
 #                regs_pinv = np.linalg.pinv(regs)
-#                betas = regs_pinv.dot(cdata[epi_mask2[...,sl],sl])
-#                cdata[epi_mask2[...,sl],sl] -= epi_pvf[epi_mask2[...,sl],sl,1:].dot(betas)
+#                betas = regs_pinv.dot(cdata[sl_mask2,sl])
+#                cdata[sl_mask2,sl] -= epi_pvf[sl_mask2,sl,1:].dot(betas)
             yield slab, reg, cdata
         return
 
