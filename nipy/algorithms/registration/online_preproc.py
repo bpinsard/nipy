@@ -865,6 +865,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
 #                cdata[...,sl] = np.exp(fit)
                 cdata[sl_mask2,sl] = np.exp(logdata[sl_mask2]-fit[sl_mask2])
                 cdata[np.isinf(cdata[...,sl]),sl] = 0
+                cdata[cdata[...,sl]>10,sl] = 0
                 cdata[-sl_mask2,sl] = 0
 #                cdata[cdata[...,sl]>10,sl] = 0
 #                regs = epi_pvf[sl_mask2,sl,1:]
@@ -872,6 +873,9 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
 #                regs_pinv = np.linalg.pinv(regs)
 #                betas = regs_pinv.dot(cdata[sl_mask2,sl])
 #                cdata[sl_mask2,sl] -= epi_pvf[sl_mask2,sl,1:].dot(betas)
+            if (np.count_nonzero(np.isinf(cdata)) > 0 or 
+                np.count_nonzero(np.isnan(cdata)) > 0): 
+                raise RuntimeError('inf or nan')
             yield slab, reg, cdata
         return
 
