@@ -114,27 +114,28 @@ class EPIOnlineResample(object):
             if not self._resample_fmap_values is None:
                 interp_coords[...,self.pe_dir] += self._resample_fmap_values
         else: # we have to solve which transform we sample with
+            t = affines[0][0][1][0]
             for slab,trans in affines:
                 wld2epi = np.linalg.inv(trans)
                 tmp_coords[:] = apply_affine(wld2epi, coords)
                 if self.fmap != None:
-                    tmp_coords[...,self.pe_dir] += fmap_values
+                    tmp_coords[...,self.pe_dir] += self._resample_fmap_values
                 subset.fill(False)
                     
-                if sg[0][0]==t and sg[1][0]==t:
+                if slab[0][0]==t and slab[1][0]==t:
                     times = np.arange(slab[0][1],slab[1][1])
-                elif sg[0][0]==t:
+                elif slab[0][0]==t:
                     times = np.arange(slab[0][1], self.nslices)
-                elif sg[1][0]==t:
-                    times = np.arange(slab[0][1], self.nslices)
+                elif slab[1][0]==t:
+                    times = np.arange(0, slab[1][1]+1)
                 else:
                     times = np.arange(0, self.nslices)
                 subset = np.any(
-                    np.abs(tmp_coords[...,self.slice_axis,np.newaxis]-
-                           self.slice_order[times][np.newaxis]) \
-                        < self.st_ratio+.1, -1)
-            interp_coords[subset] = tmp_coords[subset]
-        self.resample(data, out,interp_coords)
+                    np.abs(tmp_coords[...,self.slice_axis,np.newaxis]-\
+                           self.slice_order[times][np.newaxis]) <\
+                        self.st_ratio+.1, -1)
+                interp_coords[subset] = tmp_coords[subset]
+        self.resample(data, out, interp_coords)
         del interp_coords, tmp_coords, subset
 
     def _epi_inv_shiftmap(self, affine, shape):
@@ -351,7 +352,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                       self.slab_class_voxels,
                       self.cbspline[...,0])
         # remove samples that does not have expected contrast (ie sigloss)
-
+        # if fieldmap provided does it using the computed sigloss
+        # otherwise remove the samples with inverted contrast
         if not self.fmap is None:
             grid = apply_affine(
                 np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
@@ -386,16 +388,15 @@ class EPIOnlineRealign(EPIOnlineResample):
                       self._samples_data,
                       self.slab_class_voxels,
                       self.cbspline[...,0])
-        yield self.slabs[0], last_reg.as_affine().dot(self.affine), data1
+        yield [self.slabs[0]], [last_reg.as_affine().dot(self.affine)], data1
         
-        slice_voxs_m = np.empty(self.slab_class_voxels.shape[1], np.bool)
         slice_axes = np.ones(3, np.bool)
         slice_axes[self.slice_axis] = False
         slice_spline = np.empty(data1.shape[:2])
 
         self.mot_ests=[]
         
-        method='volume'
+        method='detect'
         if method is 'volume':
             for nvol, self.affine, data1[:] in frame_iterator:
                 print 'volume %d'%nvol
@@ -415,85 +416,120 @@ class EPIOnlineRealign(EPIOnlineResample):
                               self.cbspline[...,0])
 
         elif method is 'detect':
-            for fr,sl,aff,tt,slice_data in stack.iter_slices():
+            
+            if stack._slabs is not None:
+                stack_it = stack.iter_slabs()
+            else:
+                stack_it = stack.iter_slices()
+
+            sl_voxs_m = np.empty(self.slab_class_voxels.shape[1], np.int8)
+            self.motion_detection = []
+            unyielded_slices = []
+
+            for fr,sl,aff,tt,sl_data in stack_it:
             
                 sl_mask = self.epi_mask[...,sl]
 
-                slice_voxs_m[:] = np.logical_and(
-                    np.all(np.abs(self.slab_class_voxels[...,self.slice_axis]-sl)<.2,0),
-                    self._reliable_samples)
-                n_samples = np.count_nonzero(slice_voxs_m)
-                if n_samples < 100:
-                    data1[...,sl] = slice_data
-                    slab_data.append((fr,sl,aff,tt,slice_data))
+                if not isinstance(sl,list):
+                    sl = [sl]
+                    sl_data = [sl_data]
+                sl_voxs_m.fill(-1)
+                for s in sl:
+                    sl_voxs_m[np.logical_and(
+                            np.all(np.abs(self.slab_class_voxels[...,self.slice_axis]-s)<.2,0),
+                            self._reliable_samples)] = s
+                n_samples = np.count_nonzero(sl_voxs_m >= 0)
+                if n_samples < 100: # this should not happen for slabs
+                    for s,sd in zip(sl,sl_data):
+                        data1[...,s] = sd
+                        slab_data.append((fr,s,aff,tt,sd))
                     continue
-                slice_spline[:] = _cspline_transform(slice_data)
-                slice_samples = np.empty((2, n_samples))
-                _cspline_sample2d(
-                    slice_samples, slice_data.astype(np.float),
-                    *self.slab_class_voxels[:,slice_voxs_m][...,slice_axes].T)
-                d0 = self._samples_data[:,slice_voxs_m]
-                class_nc = np.divide(
-                    (slice_samples-self._samples_data[:,slice_voxs_m]).std(1),
-                    slice_samples.std(1)*
-                    self._samples_data[:,slice_voxs_m].std(1))
+                sl_samples = np.empty((2, n_samples))
+                d0 = np.empty((2, n_samples))
+                ofst = 0
+                for s,sd in zip(sl,sl_data):
+                    mm = sl_voxs_m==s
+                    cnt = np.count_nonzero(mm)
+                    slice_spline[:] = _cspline_transform(sd)
+                    _cspline_sample2d(
+                        sl_samples[ofst:ofst+cnt],
+                        sd.astype(np.float),
+                        *self.slab_class_voxels[:,mm][...,slice_axes].T)
+                    d0[:,ofst:ofst+cnt] = self._samples_data[:,mm]
+                    ofst += cnt
+                class_nc = (sl_samples-d0).std(1)/d0.std(1)
                 
-                print fr, sl, 'class_nc', class_nc, slice_samples.shape
-                mot = class_nc[1] > .021
+                print fr, sl, 'class_nc', class_nc, sl_samples.shape
+                mot = class_nc[1] > 1.5
+                
+                self.motion_detection.append((fr,sl,class_nc))
 
                 mot_flags.append(mot)
 
+                del sl_samples, d0
+
                 # motion detected and there are sufficient slices in slab
-                if mot and sum(mot_flags)>1 and len(mot_flags)>=stack.nslices:
+                if mot and sum(mot_flags)>1 and len(mot_flags)>=self.nslices:
                     slab = (
                         (slab_data[0][0],
                          np.where(self.slice_order==slab_data[0][1])[0][0]),
                         (slab_data[-1][0],
                          np.where(self.slice_order==slab_data[-1][1])[0][0]))
                     self.slabs.append(slab)
-                    nreg = self._register_slab(
-                        self.slabs[-1],
-                        slab_data)
+                    nreg, data = self._register_slab(self.slabs[-1],slab_data)
 #                    [s for s,m in zip(slab_data,mot_flags) if not m])
                     self.transforms.append(nreg)
-                    slab_data = []
-                    mot_flags = []
-                    last_reg = nreg
+
                     self.epi_mask=self.inv_resample(
                         self.mask, nreg.as_affine(), data1.shape) > 0
 
                     self.apply_transform(
-                        self.transforms[-1],
-                        self.class_coords, self.slab_class_voxels,
+                        nreg, self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=data1.shape[self.pe_dir])
 
-                    """                    
-                    if slab[0][1] > 0:
-                        yield (self.slabs[-2],), nreg.as_affine().dot(self.affine), slab
-                    for fr in range(slab[0][0],
-                                    slab[1][0]+(slab[1][1]==stack.nslices)):
-                        pass
-                        """                     
-                    yield slab, nreg.as_affine().dot(self.affine), data1
-                slab_data.append((fr,sl,aff,tt,slice_data))
-                data1[...,sl] = slice_data
-        if  len(slab_data) > 0:
-            slab = ((slab_data[0][0],
-                     np.where(self.slice_order==slab_data[0][1])[0][0]),
-                    (slab_data[-1][0],
-                     np.where(self.slice_order==slab_data[-1][1])[0][0]))
-            self.slabs.append(slab)
-            nreg = self._register_slab(self.slabs[-1],slab_data)
-            self.transforms.append(nreg)
-            yield slab, nreg.as_affine().dot(self.affine), data1
+                    first_frame_full = slab[0][1] == 0
+                    last_frame_full = slab[1][1] == self.nslices
+                    multiple_frames = slab[0][0]<slab[1][0]
+                    if not first_frame_full and \
+                            (multiple_frames or last_frame_full):
+                        for fr2,sl2,aff2,tt2,slice_data2 in unyielded_slices:
+                            data[...,sl2,0] = slice_data2
+                        unyielded_slices = []
+                        yield (self.slabs[-2],slab), \
+                            [t.as_affine().dot(self.affine) \
+                                 for t in (last_reg,nreg)],\
+                                 data[...,0]
+                    for fr2 in range(slab[0][0]+(1-first_frame_full),
+                                     slab[1][0]+last_frame_full):
+                        yield [((fr2,0),(fr2,self.nslices))], \
+                            [nreg.as_affine().dot(self.affine)], \
+                            data[...,fr2-slab[0][0]]
+                    if last_frame_full:
+                        unyielded_slices = [s for s in slab_data if s[0]==slab[1][0]]
+                    del data
+                    slab_data = []
+                    mot_flags = []
+                    last_reg = nreg
+
+                for s,sd in zip(sl,sl_data):
+                    data1[...,s] = sd
+                    slab_data.append((fr,s,aff,tt,sd))
+            if  len(slab_data) > 0:
+                slab = ((slab_data[0][0],
+                         np.where(self.slice_order==slab_data[0][1])[0][0]),
+                        (slab_data[-1][0],
+                         np.where(self.slice_order==slab_data[-1][1])[0][0]))
+                self.slabs.append(slab)
+                nreg, data = self._register_slab(self.slabs[-1],slab_data)
+                self.transforms.append(nreg)
+                yield [slab], [nreg.as_affine().dot(self.affine)], data1
 
     # register a data slab
     def _register_slab(self,slab,slab_data):
-        nframes = slab[1][0] - slab[0][0] + 1
-        data = np.empty(slab_data[0][-1].shape + \
-                            (self.slice_order.max()+1,nframes))
-        data.fill(np.nan) # just to check, to be removed?
         fr1 = slab_data[0][0]
+        nframes = slab[1][0] - fr1 + 1
+        data = np.empty(slab_data[0][-1].shape + (self.nslices,nframes))
+        data.fill(np.nan) # just to check, to be removed?
         for fr,sl,aff,tt,slice_data in slab_data:
             data[...,sl,fr-fr1] = slice_data
         # fill missing slice with following or previous slice
@@ -506,20 +542,20 @@ class EPIOnlineRealign(EPIOnlineResample):
                 so = self.slice_order[si]
                 data[...,so,0] = data[...,so,1]
             pos = np.where(self.slice_order==sl)[0]
-            count2=np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
+            count2 = np.squeeze(np.apply_over_axes(
+                    np.sum, np.isnan(data),[0,1]))
             if nframes == 2:
                 pos = max(slab[0][1], pos)
             for si in range(pos, self.nslices):
                 so = self.slice_order[si]
                 data[...,so,-1] = data[...,so,-2]
-        count3=np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
+        count3 = np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
         if np.count_nonzero(np.isnan(data)) > 0:
-            crashboumbang()
+            raise RuntimeError
 
         reg = self.affine_class(self.transforms[-1].as_affine())
         self.estimate_instant_motion(data, reg)
-        del data
-        return reg
+        return reg, data
 
     # estimate motion on a data volume
     def estimate_instant_motion(self, data, transform):
@@ -538,7 +574,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         def f(pc):
             self._init_energy(pc, data, transform)
             nrgy = self._energy()
-            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
+#            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
             return nrgy
 
         def fprime(pc):
