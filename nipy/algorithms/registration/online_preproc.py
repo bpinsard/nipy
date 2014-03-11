@@ -467,7 +467,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         sl_data[sl_mask].ravel())
                     mot = class_nc[1] > 1.3
                     mot = corr < .5
-                    mot = scipy.stats.linregress(sl_samples[1],d0[1])[3] > .5e-15
+                    mot = scipy.stats.linregress(sl_samples[1],d0[1])[3] > 1e-15
                 
                     self.motion_detection.append((
                             fr,sl,
@@ -559,23 +559,31 @@ class EPIOnlineRealign(EPIOnlineResample):
         data.fill(np.nan) # just to check, to be removed?
         for fr,sl,aff,tt,slice_data in slab_data:
             data[...,sl,fr-fr1] = slice_data
+        data[...,:slab_data[0][1],0] = data[...,slab_data[0][1],:1]
+        data[...,slab_data[1][1]:,-1] = data[...,slab_data[-1][1],-1:]
         # fill missing slice with following or previous slice
         count1=np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
         if nframes > 1:
             n_missl = slab[0][1]
             if nframes==2:
                 n_missl = min(slab[1][1]+1, n_missl)
+                for si in range(n_missl, slab[0][1]):
+                    so = self.slice_order[si]
+                    data[...,so,0] = data[...,so,1]
             for si in range(n_missl):
                 so = self.slice_order[si]
                 data[...,so,0] = data[...,so,1]
-            pos = np.where(self.slice_order==sl)[0]
+
+            idx = np.where(self.slice_order==sl)[0]
             count2 = np.squeeze(np.apply_over_axes(
                     np.sum, np.isnan(data),[0,1]))
+            idx2 = idx
             if nframes == 2:
-                pos = max(slab[0][1], pos)
-            for si in range(pos, self.nslices):
+                idx2 = max(slab[0][1], idx2)
+            for si in range(idx2, self.nslices):
                 so = self.slice_order[si]
                 data[...,so,-1] = data[...,so,-2]
+
         count3 = np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
         if np.count_nonzero(np.isnan(data)) > 0:
             raise RuntimeError
