@@ -339,7 +339,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
         #suppose first frame was motion free
         self.epi_mask=self.inv_resample(
-            self.mask, last_reg.as_affine(), data1.shape) > 0
+            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0
         
         # compute values for initial registration
         self.apply_transform(
@@ -426,66 +426,95 @@ class EPIOnlineRealign(EPIOnlineResample):
             self.motion_detection = []
             unyielded_slices = []
 
-            for fr,sl,aff,tt,sl_data in stack_it:
-            
+            fr,sl,aff,tt,sl_data = stack_it.next()
+            mot, nmot = False, 0
+            stack_has_data = True
+            while stack_has_data:
                 sl_mask = self.epi_mask[...,sl]
 
                 if not isinstance(sl,list):
                     sl = [sl]
-                    sl_data = [sl_data]
+                    sl_data = sl_data[...,np.newaxis]
                 sl_voxs_m.fill(-1)
                 for s in sl:
                     sl_voxs_m[np.logical_and(
                             np.all(np.abs(self.slab_class_voxels[...,self.slice_axis]-s)<.2,0),
                             self._reliable_samples)] = s
                 n_samples = np.count_nonzero(sl_voxs_m >= 0)
-                if n_samples < 100: # this should not happen for slabs
-                    for s,sd in zip(sl,sl_data):
-                        data1[...,s] = sd
-                        slab_data.append((fr,s,aff,tt,sd))
-                    continue
-                sl_samples = np.empty((2, n_samples))
-                d0 = np.empty((2, n_samples))
-                ofst = 0
-                for s,sd in zip(sl,sl_data):
-                    mm = sl_voxs_m==s
-                    cnt = np.count_nonzero(mm)
-                    slice_spline[:] = _cspline_transform(sd)
-                    _cspline_sample2d(
-                        sl_samples[ofst:ofst+cnt],
-                        sd.astype(np.float),
-                        *self.slab_class_voxels[:,mm][...,slice_axes].T)
-                    d0[:,ofst:ofst+cnt] = self._samples_data[:,mm]
-                    ofst += cnt
-                class_nc = (sl_samples-d0).std(1)/d0.std(1)
+                if n_samples > 100: # this should always be true for slabs?
+                    sl_samples = np.empty((2, n_samples))
+                    d0 = np.empty((2, n_samples))
+                    ofst = 0
+                    for si,s in enumerate(sl):
+                        mm = sl_voxs_m==s
+                        cnt = np.count_nonzero(mm)
+                        slice_spline[:] = _cspline_transform(data1[...,si])
+                        crds = self.slab_class_voxels[:,mm][...,slice_axes].T
+                        _cspline_sample2d(d0[:,ofst:ofst+cnt],slice_spline,*crds)
+                        slice_spline[:] = _cspline_transform(sl_data[...,si])
+                        _cspline_sample2d(sl_samples[:,ofst:ofst+cnt],
+                                          slice_spline, *crds)
+#                    d0[:,ofst:ofst+cnt] = self._samples_data[:,mm]
+                        ofst += cnt
+                    diff = sl_samples-d0
+                    class_nc = diff.std(1)/self._samples_data.std(1)
+                    
+                    corr = np.corrcoef(sl_samples[1],d0[1])[0,1]
+                    print fr, sl, 'class_nc', class_nc, d0.std(1), n_samples
+                    print scipy.stats.linregress(sl_samples[1],d0[1])
+                    print scipy.stats.linregress(
+                        data1[...,sl][sl_mask].ravel(),
+                        sl_data[sl_mask].ravel())
+                    mot = class_nc[1] > 1.3
+                    mot = corr < .5
+                    mot = scipy.stats.linregress(sl_samples[1],d0[1])[3] > .5e-15
                 
-                print fr, sl, 'class_nc', class_nc, sl_samples.shape
-                mot = class_nc[1] > 1.5
-                
-                self.motion_detection.append((fr,sl,class_nc))
+                    self.motion_detection.append((
+                            fr,sl,
+                            dict(d0=d0, sl_samples=sl_samples,
+                                 corr=corr,
+                                 means=diff.mean(1),stds=diff.std(1),
+                                 cur_std=self._samples_data.std(1),
+                                 prev_std=d0.std(1)) ))
 
-                mot_flags.append(mot)
+                    mot_flags.append(mot)
 
-                del sl_samples, d0
+                    del sl_samples, d0
+
+                    nmot = sum(mot_flags)
+
+                # is that right to do it here?????
+                for si,s in enumerate(sl):
+                    data1[...,si] = sl_data[...,si]
+                    slab_data.append((fr,s,aff,tt,sl_data[...,si]))
+
+                try:
+                    fr,sl,aff,tt,sl_data = stack_it.next()
+                except StopIteration:
+                    stack_has_data = False
 
                 # motion detected and there are sufficient slices in slab
-                if mot and sum(mot_flags)>1 and len(mot_flags)>=self.nslices:
+                if (not mot and nmot>0) or not stack_has_data:
+                    # and len(slab_data)-nmot>=self.nslices:
+                    mot1_idx = (mot_flags+[True]).index(True)
                     slab = (
                         (slab_data[0][0],
                          np.where(self.slice_order==slab_data[0][1])[0][0]),
-                        (slab_data[-1][0],
-                         np.where(self.slice_order==slab_data[-1][1])[0][0]))
+                        (slab_data[mot1_idx-1][0],
+                         np.where(self.slice_order==slab_data[mot1_idx-1][1])[0][0]))
                     self.slabs.append(slab)
-                    nreg, data = self._register_slab(self.slabs[-1],slab_data)
+                    nreg, data = self._register_slab(self.slabs[-1],
+                                                     slab_data[:mot1_idx])
 #                    [s for s,m in zip(slab_data,mot_flags) if not m])
                     self.transforms.append(nreg)
 
                     self.epi_mask=self.inv_resample(
-                        self.mask, nreg.as_affine(), data1.shape) > 0
+                        self.mask, nreg.as_affine().dot(self.affine),
+                        data1.shape) > 0
 
                     self.apply_transform(
                         nreg, self.class_coords, self.slab_class_voxels,
-                        self.fmap_values, phase_dim=data1.shape[self.pe_dir])
+                        self.fmap_values, phase_dim=stack._shape[self.pe_dir])
 
                     first_frame_full = slab[0][1] == 0
                     last_frame_full = slab[1][1] == self.nslices
@@ -511,10 +540,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                     mot_flags = []
                     last_reg = nreg
 
-                for s,sd in zip(sl,sl_data):
-                    data1[...,s] = sd
-                    slab_data.append((fr,s,aff,tt,sd))
-            if  len(slab_data) > 0:
+                    """
+             if  len(slab_data) > 0:
                 slab = ((slab_data[0][0],
                          np.where(self.slice_order==slab_data[0][1])[0][0]),
                         (slab_data[-1][0],
@@ -523,7 +550,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 nreg, data = self._register_slab(self.slabs[-1],slab_data)
                 self.transforms.append(nreg)
                 yield [slab], [nreg.as_affine().dot(self.affine)], data1
-
+"""
     # register a data slab
     def _register_slab(self,slab,slab_data):
         fr1 = slab_data[0][0]
@@ -574,7 +601,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         def f(pc):
             self._init_energy(pc, data, transform)
             nrgy = self._energy()
-#            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
+            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
             return nrgy
 
         def fprime(pc):
