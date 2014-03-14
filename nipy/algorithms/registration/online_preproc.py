@@ -19,6 +19,8 @@ from scipy.ndimage.interpolation import map_coordinates
 from .slice_motion import surface_to_samples, compute_sigloss, intensity_factor
 
 
+import time
+
 # Module globals
 SLICE_ORDER = 'ascending'
 INTERLEAVED = None
@@ -388,7 +390,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         slice_axes = np.ones(3, np.bool)
         slice_axes[self.slice_axis] = False
-        slice_spline = np.empty(stack.shape[:2])
+        slice_spline = np.empty(stack._shape[:2])
 
         self.mot_ests=[]
         
@@ -448,20 +450,22 @@ class EPIOnlineRealign(EPIOnlineResample):
                         cnt = np.count_nonzero(mm)
                         crds = self.slab_class_voxels[:,mm][...,slice_axes].T
 
-                        slice_spline[:] = _cspline_transform(data1[...,si])
+                        slice_spline[:] = _cspline_transform(data1[...,s])
                         _cspline_sample2d(d0[:,ofst:ofst+cnt],
                                           slice_spline,*crds)
-                        slice_spline[:] = _cspline_transform(datan[...,si])
+                        slice_spline[:] = _cspline_transform(datan[...,s])
                         _cspline_sample2d(dn[:,ofst:ofst+cnt],
                                           slice_spline,*crds)
                         slice_spline[:] = _cspline_transform(sl_data[...,si])
                         _cspline_sample2d(sl_samples[:,ofst:ofst+cnt],
                                           slice_spline, *crds)
                         ofst += cnt
-                    print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])
-                    print scipy.stats.linregress(sl_samples[1],dn[1])
 
-                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-17
+                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
+                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
+                    if mot:
+                        print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
+                        print scipy.stats.linregress(sl_samples[1],d0[1])[2:]
                     
                     self.motion_detection.append(
                         (fr,sl,(d0,dn,sl_samples),
@@ -475,7 +479,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                 # is that right to do it here?????
                 for si,s in enumerate(sl):
-                    datan[...,si] = sl_data[...,si]
+                    datan[...,s] = sl_data[...,si]
                     slab_data.append((fr,s,aff,tt,sl_data[...,si]))
 
                 try:
@@ -513,6 +517,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                     multiple_frames = fr0 < frn
                     regs = []
                     slabs = []
+                    if not stack_has_data:
+                        frn = slab_data[-1][0]
+                        sln = self.nslices
+
                     yield_data.fill(np.nan)
                     if not first_frame_full and \
                             (multiple_frames or last_frame_full):
@@ -543,8 +551,6 @@ class EPIOnlineRealign(EPIOnlineResample):
                                 [reg.as_affine().dot(self.affine) \
                                      for reg in regs+[nreg]], yield_data
                             yield_data.fill(np.nan)
-
-
                     # TODO : handle movement frames 
                     slab_data = []
                     mot_flags = []
