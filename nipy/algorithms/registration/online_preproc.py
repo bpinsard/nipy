@@ -461,27 +461,25 @@ class EPIOnlineRealign(EPIOnlineResample):
                                           slice_spline, *crds)
                         ofst += cnt
 
-                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
-                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
+#                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
+#                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
+                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.98
+                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.98
+
                     if mot:
                         print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
                         print scipy.stats.linregress(sl_samples[1],d0[1])[2:]
                     
                     self.motion_detection.append(
-                        (fr,sl,(d0,dn,sl_samples),
-                         (data1[...,sl][sl_mask].ravel(),
-                          datan[...,sl][sl_mask].ravel(),
-                          sl_data[sl_mask].ravel())))
+                        (fr,sl,(d0,dn,sl_samples),))
                     mot_flags.append(mot)
 #                    del sl_samples, d0
                 else:
                     mot_flags.append(False)
 
-                # is that right to do it here?????
                 for si,s in enumerate(sl):
                     datan[...,s] = sl_data[...,si]
                     slab_data.append((fr,s,aff,tt,sl_data[...,si]))
-
                 try:
                     fr,sl,aff,tt,sl_data = stack_it.next()
                 except StopIteration:
@@ -510,7 +508,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         nreg, self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=stack._shape[self.pe_dir])
 
-                    fr0 = slab_data[0][0]
+                    fr0, sl0 = slab_data[0][:2]
                     slab = ((fr0,sl0),(frn,sln))
                     first_frame_full = sl0 == 0
                     last_frame_full = sln == self.nslices
@@ -522,22 +520,16 @@ class EPIOnlineRealign(EPIOnlineResample):
                         sln = self.nslices
 
                     yield_data.fill(np.nan)
-                    if not first_frame_full and \
-                            (multiple_frames or last_frame_full):
+                    if len(unyielded_slices)>0:
                         for fr2,sl2,aff2,tt2,slice_data2 in unyielded_slices:
-                            print 'frame %d slice %d' %( fr2,sl2)
+                            print 'frame %d slice %d' %(fr2,sl2)
                             yield_data[...,sl2] = slice_data2
-                        unyielded_slices = []
                         slabs = [sl2 for sl2 in self.slabs if sl2[0]==fr0]
                         regs = [last_reg]
-#                        yield prev_slabs+[slab], \
-#                            [t.as_affine().dot(self.affine) \
-#                                 for t in (last_reg,nreg)], data
-#                    for fr2 in range(fr0+(1-first_frame_full),
-#                                     frn+last_frame_full):
+
                     for sd in slab_data:
                         fr2,sl2,aff2,tt2,slice_data2 = sd
-                        if fr2 > slab_data[-1][0] -2:
+                        if fr2 > frn -2:
                             print 'fill data1 %d'%sl2
                             data1[...,sl2] = slice_data2
                         if not last_frame_full and fr2==slab_data[-1][0]:
@@ -545,12 +537,15 @@ class EPIOnlineRealign(EPIOnlineResample):
                         else:
                             yield_data[...,sl2] = slice_data2
                             print 'frame %d slice %d' %(fr2,sl2)
-                        if sl2 == self.slice_order[-1]:
-                            print 'yield!!!'
-                            yield fr2, slabs+[slab],\
-                                [reg.as_affine().dot(self.affine) \
-                                     for reg in regs+[nreg]], yield_data
-                            yield_data.fill(np.nan)
+                            if sl2 == self.slice_order[-1]:
+                                print 'yield!!!'
+                                unyielded_slices = []
+                                if np.count_nonzero(np.isnan(yield_data))>0:
+                                    raise RuntimeError
+                                yield fr2, slabs+[slab],\
+                                    [reg.as_affine().dot(self.affine) \
+                                         for reg in regs+[nreg]], yield_data
+                                yield_data.fill(np.nan)
                     # TODO : handle movement frames 
                     slab_data = []
                     mot_flags = []
