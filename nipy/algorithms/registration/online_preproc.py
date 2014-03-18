@@ -107,8 +107,6 @@ class EPIOnlineResample(object):
         self._precompute_sample_fmap(coords,data.shape)
         interp_coords = np.empty(coords.shape)
             
-        tmp_coords = np.empty(coords.shape)
-        subset = np.zeros(coords.shape[:-1], dtype=np.bool)
         tmp = np.empty(coords.shape[:-1])
         if len(affines) == 1: #easy, one transform per volume
             wld2epi = np.linalg.inv(affines[0][1])
@@ -117,12 +115,14 @@ class EPIOnlineResample(object):
                 interp_coords[...,self.pe_dir] += self._resample_fmap_values
         else: # we have to solve which transform we sample with
             t = affines[0][0][1][0]
+            tmp_coords = np.empty(coords.shape)
+            subset = np.ones(coords.shape[:-1], dtype=np.bool)
+            interp_coords.fill(np.nan) # just to check, to be removed
             for slab,trans in affines:
                 wld2epi = np.linalg.inv(trans)
                 tmp_coords[:] = apply_affine(wld2epi, coords)
                 if self.fmap != None:
                     tmp_coords[...,self.pe_dir] += self._resample_fmap_values
-                subset.fill(False)
                     
                 if slab[0][0]==t and slab[1][0]==t:
                     times = np.arange(slab[0][1],slab[1][1])
@@ -132,13 +132,16 @@ class EPIOnlineResample(object):
                     times = np.arange(0, slab[1][1]+1)
                 else:
                     times = np.arange(0, self.nslices)
-                subset = np.any(
+                interp_coords[subset] = tmp_coords[subset]
+                subset[np.any(
                     np.abs(tmp_coords[...,self.slice_axis,np.newaxis]-\
                            self.slice_order[times][np.newaxis]) <\
-                        self.st_ratio+.1, -1)
-                interp_coords[subset] = tmp_coords[subset]
+                        self.st_ratio+.1, -1)] = False
+            del tmp_coords, subset
+        if np.count_nonzero(np.isnan(interp_coords)) > 0:
+            raise RuntimeError # just to check, to be removed
         self.resample(data, out, interp_coords)
-        del interp_coords, tmp_coords, subset
+        del interp_coords, tmp
 
     def _epi_inv_shiftmap(self, affine, shape):
         # compute inverse shift map using approximate nearest neighbor
@@ -509,43 +512,40 @@ class EPIOnlineRealign(EPIOnlineResample):
                         self.fmap_values, phase_dim=stack._shape[self.pe_dir])
 
                     fr0, sl0 = slab_data[0][:2]
+                    if not stack_has_data:
+                        frn = slab_data[-1][0]
+                        sln = self.nslices
                     slab = ((fr0,sl0),(frn,sln))
                     first_frame_full = sl0 == 0
                     last_frame_full = sln == self.nslices
                     multiple_frames = fr0 < frn
                     regs = []
                     slabs = []
-                    if not stack_has_data:
-                        frn = slab_data[-1][0]
-                        sln = self.nslices
 
-                    yield_data.fill(np.nan)
+                    yield_data.fill(np.nan)# to be removed
                     if len(unyielded_slices)>0:
                         for fr2,sl2,aff2,tt2,slice_data2 in unyielded_slices:
-                            print 'frame %d slice %d' %(fr2,sl2)
                             yield_data[...,sl2] = slice_data2
-                        slabs = [sl2 for sl2 in self.slabs if sl2[0]==fr0]
+                        slabs = [slb for slb in self.slabs if slb[1][0]==fr0]
                         regs = [last_reg]
 
                     for sd in slab_data:
                         fr2,sl2,aff2,tt2,slice_data2 = sd
-                        if fr2 > frn -2:
-                            print 'fill data1 %d'%sl2
+                        if fr2 > fr -2:
                             data1[...,sl2] = slice_data2
                         if not last_frame_full and fr2==slab_data[-1][0]:
                             unyielded_slices.append(sd)
                         else:
                             yield_data[...,sl2] = slice_data2
-                            print 'frame %d slice %d' %(fr2,sl2)
                             if sl2 == self.slice_order[-1]:
-                                print 'yield!!!'
                                 unyielded_slices = []
+                                
                                 if np.count_nonzero(np.isnan(yield_data))>0:
-                                    raise RuntimeError
+                                    raise RuntimeError # to be removed
                                 yield fr2, slabs+[slab],\
                                     [reg.as_affine().dot(self.affine) \
                                          for reg in regs+[nreg]], yield_data
-                                yield_data.fill(np.nan)
+                                yield_data.fill(np.nan) # to be removed
                     # TODO : handle movement frames 
                     slab_data = []
                     mot_flags = []
