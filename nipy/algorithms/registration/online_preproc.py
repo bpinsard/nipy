@@ -513,8 +513,9 @@ class EPIOnlineRealign(EPIOnlineResample):
                     if not stack_has_data:
                         frn = slab_data[-1][0]
                         sln = self.nslices-1
-                    if fr0<=self.slabs[-1][0] and sl0 <=self.slabs[-1][1]:
-                        raise RuntimeError
+                    if len(self.slabs)>0:
+                        if fr0<=self.slabs[-1][0][0] and sl0 <=self.slabs[-1][0][1]:
+                            raise RuntimeError
                     slab = ((fr0,sl0),(frn,sln))
                     self.slabs.append(slab)
                     first_frame_full = sl0 == 0
@@ -549,7 +550,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                     # TODO : handle movement frames 
                     n_unyielded = len(unyielded_slices)
-                    slab_data = unyielded_slices
+                    slab_data = slab_data[len(slab_data)-n_unyielded:]
                     mot_flags = mot_flags[len(mot_flags)-n_unyielded:]
                     last_reg = nreg
 
