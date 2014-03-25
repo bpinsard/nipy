@@ -469,8 +469,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 #                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
 #                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
-                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.98
-                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.98
+                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.99
+                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.99
 
                     if mot:
                         print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
@@ -490,6 +490,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                 reg_sl1 = reg_sln-(mot_flags[:reg_sln][::-1]+[True]).index(True)
                 last_mot = reg_sl1-(mot_flags[:reg_sl1][::-1]+[False]).index(False)+1
                 nmot = sum(mot_flags[reg_sl1:])
+                if nmot > self.nslices:
+                    print 'register motion frame'
+                    reg_sln = len(mot_flags)-1
+                    reg_sl1 = reg_sln-(mot_flags[::-1]+[False]).index(False)
 
                 print n_unyielded, last_mot, reg_sl1, reg_sln, nmot
 
@@ -502,8 +506,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                 except StopIteration:
                     stack_has_data = False
 
-                # motion detected -> register slab
-                if (not mot and nmot>0) or not stack_has_data:
+                # if motion detected and motion finished or
+                # motion slices fills one frame or stack is empty
+                if (not mot and nmot>0) or nmot>self.nslices \
+                        or not stack_has_data:
                     fr0, frn = slab_data[reg_sl1][0], slab_data[reg_sln][0]
                     sl0 = inv_slice_order[slab_data[reg_sl1][1]]
                     sln = inv_slice_order[slab_data[reg_sln][1]]
@@ -521,9 +527,9 @@ class EPIOnlineRealign(EPIOnlineResample):
                         nreg, self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=stack._shape[self.pe_dir])
 
-                    if fr0>0:
-                        fr0 = slab_data[last_mot][0]
-                        sl0 = inv_slice_order[slab_data[last_mot][1]]
+#                    if fr0>0:
+#                        fr0 = slab_data[last_mot][0]
+#                        sl0 = inv_slice_order[slab_data[last_mot][1]]
                     if not stack_has_data:
                         frn = slab_data[-1][0]
                         sln = self.nslices-1
