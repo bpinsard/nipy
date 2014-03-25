@@ -860,8 +860,6 @@ def vox2ras_tkreg(voldim, voxres):
             [0,-voxres[1],0,voxres[1]*voldim[1]/2],
             [0,0,0,1]])
 
-import pylab
-
 class OnlineEPICorrection(object):
     
     
