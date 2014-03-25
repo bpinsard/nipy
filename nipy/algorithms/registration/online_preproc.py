@@ -333,6 +333,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         nvol, self.affine, data1 = frame_iterator.next()
         data1 = data1.astype(np.float)
         self.slice_order = stack._slice_order
+        inv_slice_order = np.argsort(self.slice_order)
         self.nslices = stack.nslices
         last_reg = self.affine_class()
         if self.init_reg is not None:
@@ -429,6 +430,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             yield_data = np.empty(stack._shape[:3])
 
             fr,sl,aff,tt,sl_data = stack_it.next()
+            last_frame_full = True
 
             mot_flags = [False]*self.nslices # suppose no motion in frame 0
             mot, nmot = False, 0
@@ -467,8 +469,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 #                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
 #                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
-                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.99
-                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.99
+                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.98
+                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.98
 
                     if mot:
                         print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
@@ -477,28 +479,38 @@ class EPIOnlineRealign(EPIOnlineResample):
                     self.motion_detection.append((fr,sl,(d0,dn,sl_samples),))
 #                    del sl_samples, d0
 
+                
+#                last_mot = 0
+#                if not last_frame_full:
+#                    last_mot = (mot_flags[:n_unyielded]).index(True)
+                #first slice without motion to use for register
+#                reg_sl1 = (mot_flags[last_mot:]+[False]).index(False)+last_mot
+                #last slice without motion to use for register
+                reg_sln = len(mot_flags) - mot_flags[::-1].index(False)
+                reg_sl1 = reg_sln-(mot_flags[:reg_sln][::-1]+[True]).index(True)
+                last_mot = reg_sl1-(mot_flags[:reg_sl1][::-1]+[False]).index(False)+1
+                nmot = sum(mot_flags[reg_sl1:])
+
+                print n_unyielded, last_mot, reg_sl1, reg_sln, nmot
+
                 for si,s in enumerate(sl):
                     datan[...,s] = sl_data[...,si]
                     slab_data.append((fr,s,aff,tt,sl_data[...,si]))
-                    mot_flags.append(mot)
-
+                    mot_flags.append(mot)                
                 try:
                     fr,sl,aff,tt,sl_data = stack_it.next()
                 except StopIteration:
                     stack_has_data = False
-                
-                idx1 = (mot_flags[n_unyielded:]+[False]).index(False)+n_unyielded
-                mot1_idx = (mot_flags[idx1:]+[True]).index(True)+idx1
-                nmot = sum(mot_flags[idx1:])
 
                 # motion detected -> register slab
                 if (not mot and nmot>0) or not stack_has_data:
-                    fr0, frn = slab_data[idx1][0], slab_data[mot1_idx-1][0]
-                    sl0 = np.where(self.slice_order==slab_data[idx1][1])[0][0]
-                    sln = np.where(self.slice_order==slab_data[mot1_idx-1][1])[0][0]
+                    fr0, frn = slab_data[reg_sl1][0], slab_data[reg_sln][0]
+                    sl0 = inv_slice_order[slab_data[reg_sl1][1]]
+                    sln = inv_slice_order[slab_data[reg_sln][1]]
                     rslab = ((fr0,sl0),(frn,sln))
-                    nreg = self._register_slab(rslab, slab_data[idx1:mot1_idx])
-
+                    nreg = self._register_slab(rslab,
+                                               slab_data[reg_sl1:reg_sln+1])
+                    
                     self.transforms.append(nreg)
 
                     self.epi_mask=self.inv_resample(
@@ -509,17 +521,20 @@ class EPIOnlineRealign(EPIOnlineResample):
                         nreg, self.class_coords, self.slab_class_voxels,
                         self.fmap_values, phase_dim=stack._shape[self.pe_dir])
 
-                    fr0, sl0 = slab_data[n_unyielded][:2]
+                    if fr0>0:
+                        fr0 = slab_data[last_mot][0]
+                        sl0 = inv_slice_order[slab_data[last_mot][1]]
                     if not stack_has_data:
                         frn = slab_data[-1][0]
                         sln = self.nslices-1
                     if len(self.slabs)>0:
-                        if fr0<=self.slabs[-1][0][0] and sl0 <=self.slabs[-1][0][1]:
+                        if fr0 <= self.slabs[-1][1][0] and \
+                                sl0 <= self.slabs[-1][1][1]:
                             raise RuntimeError
                     slab = ((fr0,sl0),(frn,sln))
                     self.slabs.append(slab)
                     first_frame_full = sl0 == 0
-                    last_frame_full = sln == self.nslices
+                    last_frame_full = sln == self.nslices-1
                     multiple_frames = fr0 < frn
                     regs = []
                     slabs = []
@@ -594,7 +609,6 @@ class EPIOnlineRealign(EPIOnlineResample):
                 so = self.slice_order[si]
                 data[...,so,-1] = data[...,so,-2]
 
-#        count3 = np.squeeze(np.apply_over_axes(np.sum, np.isnan(data),[0,1]))
 #        if np.count_nonzero(np.isnan(data)) > 0:
 #            raise RuntimeError
         self.rslab = slab
