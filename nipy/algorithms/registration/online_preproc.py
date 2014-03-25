@@ -476,7 +476,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                     if mot:
                         print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
-                        print scipy.stats.linregress(sl_samples[1],d0[1])[2:]
+                        print scipy.stats.linregress(sl_samples[1],d1[1])[2:]
                     
                     self.motion_detection.append((fr,sl,(d0,dn,sl_samples),))
 #                    del sl_samples, d0
