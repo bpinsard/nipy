@@ -249,6 +249,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
                  
+                 detection_threshold=.99,
                  motion_regularization = 0,#1e-3,
                  init_reg = None,
                  affine_class=Rigid,
@@ -280,6 +281,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.bnd_coords, self.class_coords = bnd_coords, class_coords
         self.border_nvox = self.bnd_coords.shape[0]
 
+        self.detection_threshold = detection_threshold
         self.nsamples_per_slab = nsamples_per_slab
         self.min_sample_number = min_nsamples_per_slab        
         self.affine_class = affine_class
@@ -469,8 +471,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 #                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[3]>1e-100
 #                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[3]>1e-80
-                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]<.99
-                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]<.99
+                    mot = scipy.stats.linregress(sl_samples[1],dn[1])[2]< self.detection_threshold
+                    mot = mot or scipy.stats.linregress(sl_samples[1],d0[1])[2]< self.detection_threshold
 
                     if mot:
                         print fr, sl, scipy.stats.linregress(sl_samples[1],d0[1])[2:]
