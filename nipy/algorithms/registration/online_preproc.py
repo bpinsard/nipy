@@ -493,7 +493,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 #    reg_sln = len(mot_flags)-1
                 #    reg_sl1 = reg_sln-(mot_flags[::-1]+[False]).index(False)
                 
-                print last_slab_end, reg_sl1, reg_sln, nmot
+#                print last_slab_end, reg_sl1, reg_sln, nmot
 
                 try:
                     fr,sl,aff,tt,sl_data = stack_it.next()
@@ -542,7 +542,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         fr2,sl2,aff2,tt2,slice_data2 = sd
                         if fr2 > fr-2:
                             data1[...,sl2] = slice_data2
-                        print fr2, sl2, last_frame_full
+                        #print fr2, sl2, last_frame_full
                         if fr2 < frn + last_frame_full:
                             n_yielded += 1
                             yield_data[...,sl2] = slice_data2
