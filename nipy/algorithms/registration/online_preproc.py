@@ -434,7 +434,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
             mot_flags = [False]*self.nslices # suppose no motion in frame 0
             mot, nmot = False, 0
-            last_slab_end = 0
+            last_slab_end = -1
             stack_has_data = True
             while stack_has_data:
                 sl_mask = self.epi_mask[...,sl]
@@ -753,18 +753,24 @@ class EPIOnlineRealign(EPIOnlineResample):
                                 float(self.nsamples_per_slab))
                 self._subsamp[::step] = True
 
-            self._first_vol_subset[:] = np.any(
-                np.abs(zs[:,np.newaxis]-self.slice_order[
-                        np.arange(slab[0][1],self.nslices)][np.newaxis]
-                       ) < self.st_ratio, 1) 
-            self._last_vol_subset[:] = np.any(
-                np.abs(zs[:,np.newaxis]-self.slice_order[
-                        np.arange(0,slab[1][1])][np.newaxis]
-                       ) < self.st_ratio,1)
+            excl_slices = np.ones(self.nslices, dtype=np.bool)
+            excl_slices[np.arange(slab[0][1],self.nslices)] = False
+            self._first_vol_subset[:] = np.all(
+                np.abs(zs[:,np.newaxis]-
+                       self.slice_order[excl_slices][np.newaxis]) > 
+                    self.st_ratio, 1)
+            excl_slices.fill(True)
+            excl_slices[np.arange(0,slab[1][1])] = False
+            self._last_vol_subset[:] = np.all(
+                np.abs(zs[:,np.newaxis]-
+                       self.slice_order[excl_slices][np.newaxis]) > 
+                self.st_ratio,1)
+            print np.count_nonzero(self._first_vol_subset), \
+                np.count_nonzero(self._last_vol_subset)
 
             if data.shape[-1] == 1:
-                np_and_ow(self._last_vol_subset,self._first_vol_subset)
-                np.logical_and(self._first_vol_subset,self._subsamp,
+                np_and_ow(self._last_vol_subset, self._first_vol_subset)
+                np.logical_and(self._first_vol_subset, self._subsamp,
                                self._first_vol_subset_ssamp)
                 self._last_vol_subset_ssamp.fill(False)
                 self._last_vol_subset.fill(False)
