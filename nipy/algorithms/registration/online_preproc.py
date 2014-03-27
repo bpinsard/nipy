@@ -436,6 +436,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             mot, nmot = False, 0
             last_slab_end = -1
             stack_has_data = True
+            drift = False
             while stack_has_data:
                 sl_mask = self.epi_mask[...,sl]
 
@@ -473,7 +474,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         print 'motion (%d,%s) %f (p=%f)'%(fr,str(sl),corr,pval)
 
                     _,_,corr,pval,_=scipy.stats.linregress(sl_samples[1],d0[1])
-                    drift = corr < self.detection_threshold
+                    drift = drift or (corr < self.detection_threshold)
                     if drift:
                         print 'drift (%d,%s) %f (p=%f)'%(fr,str(sl),corr,pval)
                     
@@ -501,9 +502,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                 # if motion detected and motion finished or
                 # motion slices fills one frame or stack is empty
-                if ((not mot and
-                     (nmot>0 or (drift and sl==stack._slabs[-1][1]))) or
-                    not stack_has_data):
+                if ((not mot and (nmot>0 or ( drift and slab_data[-1][1]==self.slice_order[-1]))) or not stack_has_data):
                     # or nmot>self.nslices
                     fr0, frn = slab_data[reg_sl1][0], slab_data[reg_sln][0]
                     sl0 = inv_slice_order[slab_data[reg_sl1][1]]
@@ -567,6 +566,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                     mot_flags = mot_flags[n_yielded:]
                     last_slab_end = max(0,reg_sln - n_yielded)
                     last_reg = nreg
+                    drift = False
 
 
     # register a data slab
