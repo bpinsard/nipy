@@ -339,12 +339,29 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.nslices = stack.nslices
         last_reg = self.affine_class()
         if self.init_reg is not None:
-            last_reg.from_matrix44(self.init_reg)
+            if self.init_reg == 'auto':
+                # simple center of mass alignment for initialization
+                mdata = self.mask.get_data()
+                c_ref = np.squeeze(
+                    np.apply_over_axes(
+                        np.sum,(np.mgrid[[slice(0,s) for s in mdata.shape]]*
+                                mdata[np.newaxis]),[1,2,3])/float(mdata.sum()))
+                c_frame1 = np.squeeze(
+                    np.apply_over_axes(
+                        np.sum,(np.mgrid[[slice(0,s) for s in data1.shape]]*
+                                data1[np.newaxis]),[1,2,3])/float(data1.sum()))
+                tr = self.mask.get_affine().dot(c_ref.tolist()+[1])-\
+                    self.affine.dot(c_frame1.tolist()+[1])
+                    
+                print tr
+                last_reg.param = np.hstack([tr[:3],[0]*3])
+            else:
+                last_reg.from_matrix44(self.init_reg)
         self.rslab = ((0,0),(0,self.nslices-1))
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
         #suppose first frame was motion free
         self.epi_mask=self.inv_resample(
-            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0
+            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0 
         
         # compute values for initial registration
         self.apply_transform(
