@@ -106,6 +106,9 @@ class EPIOnlineResample(object):
 
     def resample_coords(self, data, affines, coords, out):
 
+        if not hasattr(self,'nslices'):
+            self.nslices = data.shape[self.slice_axis]
+
         self._precompute_sample_fmap(coords,data.shape)
         interp_coords = np.empty(coords.shape)
             
