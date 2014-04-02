@@ -70,6 +70,8 @@ class EPIOnlineResample(object):
 
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
         self._resample_fmap_values = None
+        self.st_ratio = 1
+
 
     def resample(self, data, out, voxcoords,time=None, splines=None):
         if splines is None:
@@ -286,7 +288,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.min_sample_number = min_nsamples_per_slab        
         self.affine_class = affine_class
         self.init_reg = init_reg
-        self.st_ratio = 1
 
         self._motion_regularization = motion_regularization
 
