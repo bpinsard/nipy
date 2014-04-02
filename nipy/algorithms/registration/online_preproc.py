@@ -70,6 +70,8 @@ class EPIOnlineResample(object):
 
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
         self._resample_fmap_values = None
+        self.st_ratio = 1
+
 
     def resample(self, data, out, voxcoords,time=None, splines=None):
         if splines is None:
@@ -286,7 +288,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.min_sample_number = min_nsamples_per_slab        
         self.affine_class = affine_class
         self.init_reg = init_reg
-        self.st_ratio = 1
 
         self._motion_regularization = motion_regularization
 
@@ -1182,3 +1183,12 @@ class NiftiIterator():
             yield t, self.nii.get_affine(), data[:,:,:,t]
         del data
 
+def resample_mat_shape(mat,shape,voxsize):
+    old_voxsize = np.sqrt((mat[:3,:3]**2).sum(0))
+    k = old_voxsize*np.array(shape)
+    newshape = np.round(k/voxsize)
+    res = k-newshape*voxsize
+    newmat = np.eye(4)
+    newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
+    newmat[:3,3] = mat[:3,3]+newmat[:3,:3].dot(res/voxsize/2)
+    return newmat,tuple(newshape.astype(np.int32).tolist())
