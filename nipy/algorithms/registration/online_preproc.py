@@ -1182,3 +1182,12 @@ class NiftiIterator():
             yield t, self.nii.get_affine(), data[:,:,:,t]
         del data
 
+def resample_mat_shape(mat,shape,voxsize):
+    old_voxsize = np.sqrt((mat[:3,:3]**2).sum(0))
+    k = old_voxsize*np.array(shape)
+    newshape = np.round(k/voxsize)
+    res = k-newshape*voxsize
+    newmat = np.eye(4)
+    newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
+    newmat[:3,3] = mat[:3,3]+newmat[:3,:3].dot(res/voxsize/2)
+    return newmat,tuple(newshape.astype(np.int32).tolist())
