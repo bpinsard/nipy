@@ -766,8 +766,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             
             
             if hasattr(self,'_reliable_samples'):
-                step = np.floor(np.count_nonzero(self._reliable_samples)/
-                                float(self.nsamples_per_slab))
+                step = int(np.floor(np.count_nonzero(self._reliable_samples)/
+                                    float(self.nsamples_per_slab)))
                 self._subsamp[np.where(self._reliable_samples)[0][::step]] = True
             else:
                 step = np.floor(self._subsamp.shape[0]/
@@ -1176,14 +1176,24 @@ class NiftiIterator():
     def __init__(self, nii):
         
         self.nii = nii
-        self.nslices = self.nii.shape[2]
+        self.nslices,self.nframes = self.nii.shape[2:4]
+        self._affine = self.nii.get_affine()
+        self._voxel_size = np.asarray(self.nii.header.get_zooms()[:3])
         self._slice_order = np.arange(self.nslices)
+        self._shape = self.nii.shape
+        self._slice_trigger_times = np.arange(self.nslices)*self.nii.header.get_zooms()[3]/float(self.nslices)
         
     def iter_frame(self, data=True):
         data = self.nii.get_data()
-
         for t in range(data.shape[3]):
             yield t, self.nii.get_affine(), data[:,:,:,t]
+        del data
+
+    def iter_slabs(self, data=True):
+        data = self.nii.get_data()
+        for t in range(data.shape[3]):
+            for s,tt in enumerate(self._slice_trigger_times):
+                yield t, [s], self.nii.get_affine(), tt, data[:,:,s,t,np.newaxis]
         del data
 
 def resample_mat_shape(mat,shape,voxsize):
