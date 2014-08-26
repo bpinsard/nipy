@@ -407,6 +407,9 @@ class EPIOnlineRealign(EPIOnlineResample):
 #        self.use_derivatives = True
 #        self.optimizer_kwargs.setdefault('gtol', 1e-7)
 
+        n_samples_total = np.count_nonzero(self._reliable_samples)
+        self.data = np.empty((2,n_samples_total))
+        self.ndata = np.empty((2,n_samples_total))
         # reestimate first frame registration  with only reliable samples
         self.estimate_instant_motion(data1[...,np.newaxis], last_reg)
 #        self.transforms.append(last_reg)
@@ -419,6 +422,78 @@ class EPIOnlineRealign(EPIOnlineResample):
         slice_axes[self.slice_axis] = False
         slice_spline = np.empty(stack._shape[:2])
 
+
+        ndim_state = 12
+        transition_matrix = np.eye(ndim_state)
+        transition_matrix[:6,6:] = self._slice_tr # TODO: set speed
+        self.samples = np.empty((2,n_samples_total))
+        self.new_samples = np.empty((2,n_samples_total))
+        
+        def trans_func(state):
+            return transition_matrix.dot(state)
+
+        initial_state = np.hstack([last_reg.param, np.zeros(6)])
+        state_covariance = np.diag(([1]*3+[(np.pi/180.)**2]*3)*2)
+        
+        # to be checked, could be used to weigh samples
+        observation_covariance = np.empty(n_samples_total)
+        observation_covariance.fill(1./n_samples_total)
+
+        stack_it = stack.iter_slabs()
+        stack_has_data = True
+        current_volume = data1.copy()
+        fr,sl,aff,tt,sl_data = stack_it.next()
+        
+        filtered_state_means = [init_state]
+        filtered_state_covariance = []
+
+        current_state = init_state.copy()
+
+        self.samples[:] = self.new_samples
+        contrast_observed = np.diff(self.new_samples,1,0)
+        ################### create jacobian, could be updated in a function
+        jacobian = np.empty((6,n_samples_total))
+        delta = 1e-6
+        t = self.affine_class()
+        deltav = np.zeros(6)
+        for i in range(6):
+            deltav[:]=0
+            deltav[i]=delta
+            t.param = init_state[:6] + deltav
+            self.slab_sample(current_volume)
+            contrast = np.diff(self.new_samples,1,0)
+            jacobian[i] = (contrast-contrast_observed)/delta
+            del contrast
+        del deltav
+        ###################################################################
+
+        while stack_has_data:
+            
+            for si,s in enumerate(sl):
+                current_volume[...,s] = sl_data[...,si]
+         
+            predicted_state = transition_matrix.dot(current_state)
+
+            t = self.affine_class()
+            t.param = predicted_state[:6]
+            self.slab_sample(current_volume, sl) # update 
+            contrast_observed[:] = np.diff(self.new_samples,1,0)
+            
+
+            nstate_mean, nstate_cov = ukf.filter_update(
+                filtered_state_means[-1], filtered_state_covs[-1],
+                contrast_observed)
+            filtered_state_means.append(nstate_mean)
+            filtered_state_covs.append(nstate_cov)
+            try:
+                fr,sl,aff,tt,sl_data = stack_it.next()
+            except StopIteration:
+                stack_has_data = False
+                
+            self.data[:] = self.ndata
+
+
+    """
         method='detect'
         if method is 'volume':
             yield nvol, [self.slabs[0]], [last_reg.as_affine().dot(self.affine)], data1
@@ -588,7 +663,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                     last_slab_end = max(0,reg_sln - n_yielded)
                     last_reg = nreg
                     drift = False
-
+                    """
 
     # register a data slab
     def _register_slab(self,slab,slab_data,transform):
