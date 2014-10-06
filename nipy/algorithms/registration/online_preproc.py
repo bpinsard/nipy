@@ -685,7 +685,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
-    def correct(self, realigned, pvmaps, frame_shape, poly_order = 2, do_n4=False):
+    def correct(self, realigned, pvmaps, frame_shape, poly_order = 2, do_n4=False, white_idx=1,
+                maxiter = 32, residual_tol = 1e-3):
         
         float_mask = nb.Nifti1Image(
             self.mask.get_data().astype(np.float32),
@@ -704,8 +705,10 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 epi_pvf = np.empty(frame_shape+(pvmaps.shape[-1],))
                 epi_mask = np.zeros(frame_shape, dtype=np.bool)
                 prev_reg = 0
-                prev_fr = fr
-                res = np.ones(data.shape[:2])
+                white_wght = np.empty(data.shape[:2])
+                smooth_white_wght = np.empty(data.shape[:2])
+                res = np.empty(data.shape[:2])
+                corr_fac = np.empty(data.shape[:2])
             if not np.allclose(prev_reg, reg, 1e-4):
                 print 'sample pvf and mask'
                 epi_pvf[:] = self.inv_resample(
@@ -713,56 +716,48 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     mask = ext_mask)
 #                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
                 # temporary fix, should fix the mask problem
-                epi_mask[:] = epi_pvf[...,:2].sum(-1) > 0
+                epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
             cdata[:] = data
             cdata2.fill(0)
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
-                #sl_mask = epi_pvf[...,sln,:2].sum(-1) > .1
                 sl_mask[data[...,sli]<=0] = False
+                n_sl_samples = np.count_nonzero(sl_mask)
                 if np.count_nonzero(sl_mask) < 30:
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
                     continue
                 niter = 0
-                maxiter = 32
-                res_mean = 1
                 res.fill(0)
-                regs = epi_pvf[sl_mask,sln,:2]
+                regs_subset = epi_pvf[sl_mask,sln].sum(0) > 5
+                regs = epi_pvf[sl_mask,sln][...,regs_subset]
+                regs[:,-1] = 1
                 regs_pinv = np.linalg.pinv(regs)
-                residual_tol = 1e-3
                 data_mask_mean = data[sl_mask,sli].mean()
+                white_wght[:] = epi_pvf[..., sln, white_idx]*sl_mask
+                smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
+                smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
+                tmp_res = np.empty(n_sl_samples)
                 while niter<maxiter:
                     betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
-                    tmp_res = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
+                    tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
                     if np.count_nonzero(np.isnan(tmp_res))>0 or  np.count_nonzero(np.isinf(tmp_res))>0:
                         raise RuntimeError
                     res.fill(0)
                     res[sl_mask] = tmp_res
-                    #yield cdata[...,sli], res, cdata[...,sli]/data[...,sli]
-                    white_wght = epi_pvf[...,sln,1]*sl_mask
                     res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
-                        scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
-                    #res[sl_mask] -= res[sl_mask].mean()
-                    if res[sl_mask].std() < residual_tol:
+                        smooth_white_wght
+                    res_std = res[sl_mask].std()
+                    if res_std < residual_tol:
                         break
-                    corr_fac = np.exp(-res)
+                    corr_fac[:] = np.exp(-res)
                     corr_fac /= corr_fac[sl_mask].mean()
                     cdata[...,sli] *= corr_fac
-                    #cdata[...,sli] /= cdata[sl_mask,sli].mean()/data_mask_mean
-                    self.cdata=cdata.copy()
-                    print betas, res[sl_mask].std()
+                    print betas, res_std
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
             yield fr, slab, reg, cdata, cdata2
-            
         return
-
-    def fit_smooth(data, weights, mask, sigma):
-        masked_weights = weights*sl_mask
-        return scipy.ndimage.filters.gaussian_filter(data*masked_weights,sigma,mode='constant')/\
-            scipy.ndimage.filters.gaussian_filter(masked_weights,sigma,mode='constant')
-
 
     """
         from scipy.interpolate import SmoothBivariateSpline
