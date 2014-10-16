@@ -95,13 +95,21 @@ class EPIOnlineResample(object):
     def scatter_resample(self, data, out, transforms, coords, mask=True):
         points = np.empty(data.shape+(3,))
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in data.shape]],0,4)
+        phase_vec = np.zeros(3)
         for sl, t in enumerate(transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
+            phase_vec+= t[:3,self.pe_dir]
+        self.points=points
+        phase_vec /= sl
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], data.shape, 0)>0
             epi_mask[:] = binary_dilation(epi_mask, iterations=2)
             points = points[epi_mask]
+        if not self.fmap is None:
+            shift = self.fmap_scale * data.shape[self.pe_dir] *\
+                map_coordinates(self.fmap.get_data(), coords.T, order=1)
+            coords += shift[:,np.newaxis].dot(phase_vec[np.newaxis])
         print 'create interpolator'
         lndi = LinearNDInterpolator(points.reshape(-1,3), data[epi_mask].ravel())
         print 'interpolate'
@@ -186,32 +194,33 @@ class EPIOnlineResample(object):
         coords = nb.affines.apply_affine(
             fmap2fmri,
             np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
-        shift = self.fmap_scale * self.fmap.get_data()
+        shift = self.fmap_scale * self.fmap.get_data() * shape[self.pe_dir]
         coords[...,self.pe_dir] += shift
         self._inv_shiftmap = np.empty(shape)
-        inv_shiftmap_dist = np.empty(shape)
+        #inv_shiftmap_dist = np.empty(shape)
         self._inv_shiftmap.fill(np.inf)
-        inv_shiftmap_dist.fill(np.inf)
+        #inv_shiftmap_dist.fill(np.inf)
         includ = np.logical_and(
             np.all(coords>-.5,-1),
             np.all(coords<np.array(shape)[np.newaxis]-.5,-1))
         coords = coords[includ]
         rcoords = np.round(coords).astype(np.int)
-        dists = np.sum((coords-rcoords)**2,-1)
+        #dists = np.sum((coords-rcoords)**2,-1)
         shift = shift[includ]
-        self._inv_shiftmap[(rcoords[...,0],rcoords[...,1],rcoords[...,2])] = shift
+        self._inv_shiftmap[(rcoords[...,0],rcoords[...,1],rcoords[...,2])] = -shift
         for x,y,z in zip(*np.where(np.isinf(self._inv_shiftmap))):
             ngbd = self._inv_shiftmap[
                 max(0,x-1):x+1,max(0,y-1):y+1,max(0,z-1):z+1]
             self._inv_shiftmap[x,y,z] = ngbd.ravel()[np.argmin(np.abs(ngbd.ravel()))]
             del ngbd
+        del includ, coords, rcoords, shift
         return self._inv_shiftmap
             
     def inv_resample(self, vol, affine, shape, order=0, mask=slice(None)):
         ## resample a undistorted volume to distorted EPI space
         # order = map_coordinates order, if -1, does integral of voxels in the
         # higher resolution volume (eg. for partial volume map downsampling)
-        if order == -1:
+        if order < 0:
             grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]][:,mask].reshape(3,-1).T
             vol2epi = np.linalg.inv(affine).dot(vol.get_affine())
             voxs = nb.affines.apply_affine(vol2epi, grid)
@@ -222,19 +231,24 @@ class EPIOnlineResample(object):
                     self.fmap.get_data(),
                     fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
-                del fmap_voxs
                 voxs[:, self.pe_dir] += fmap_values
-                del fmap_values
+                del fmap_voxs, fmap_values
             np.round(voxs, out=voxs)
             nvols = (vol.shape+(1,))[:4][-1]
             rvol = np.empty(shape+(nvols,))
             bins = [np.arange(-.5,d+.5) for d in shape]
-            counts, _ = np.histogramdd(voxs,bins)
+            data = vol.get_data()[mask]
+            if len(vol.shape) < 4:
+                data = data[...,np.newaxis]
             for v in range(nvols):
-                rvol[...,v] = np.histogramdd(
-                    voxs, bins,weights=vol.get_data()[...,v][mask].ravel())[0]/counts
-            rvol[np.isnan(rvol)] = 0 
-            del counts, bins
+                rvol[...,v] = np.histogramdd(voxs, bins, weights=data[...,v].ravel())[0]
+            if order == -1: #normalize
+                counts, _ = np.histogramdd(voxs,bins)
+                rvol /= counts[...,np.newaxis]
+                del counts
+            rvol[np.isnan(rvol)] = 0
+            rvol = np.squeeze(rvol)
+            del bins
         else:
             grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
             if self.fmap is not None:
@@ -378,8 +392,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         last_reg.param = self._register_slab(range(self.nslices), data1, last_reg, whole_frame=True)
         #suppose first frame was motion free
-        self.epi_mask=self.inv_resample(
-            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0 
+#        self.epi_mask=self.inv_resample(
+#            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0
         
         # compute values for initial registration
         self.apply_transform(
@@ -538,15 +552,20 @@ class EPIOnlineRealign(EPIOnlineResample):
         def f(pc):
             transform.param = pc
             nrgy = self.sample_cost(slab, slab_data, transform, whole_frame=whole_frame)
-            print 'f %f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
+            print 'f %.10f : %f %f %f %f %f %f'%tuple([nrgy] + pc.tolist())
             return nrgy
         self._pc = None
         fmin, args, kwargs = configure_optimizer(self.optimizer,
                                                  **self.optimizer_kwargs)
-
         pc = fmin(f, transform.param, *args, **kwargs)
-        return pc
 
+        ## TODO: update the self._reg_samples
+        if not whole_frame:
+            transform.param = pc
+            nrgy = self.sample_cost(slab, slab_data, transform,
+                                    force_recompute_subset=True,
+                                    update_reg_samples=True)
+        return pc
 
     def apply_transform(self, transform, in_coords, out_coords,
                         fmap_values=None, subset=slice(None), phase_dim=64):
@@ -558,17 +577,18 @@ class EPIOnlineRealign(EPIOnlineResample):
             out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*phase_dim
 
     def sample_cost(self, slab, data, transform, 
-                    force_recompute_subset=False, whole_frame=False):
+                    force_recompute_subset=False, whole_frame=False,
+                    update_reg_samples = False):
 
         sa = self.slice_axis
         slice_axes = np.ones(3, np.bool)
         slice_axes[sa] = False
 
         # if change of test points z is above threshold recompute subset
-        test_points = np.array([[0,0,0],[0,0,self.nslices]])
+        test_points = np.array([(x,y,z) for x in (0,data.shape[0]) for y in (0, data.shape[1]) for z in (0,self.nslices)])
         recompute_subset = np.abs(
             self._last_subsampling_transform.apply(test_points) -
-            transform.apply(test_points))[:,sa].max() > 0.1
+            transform.apply(test_points))[:,sa].max() > 0.01
         
         if recompute_subset or force_recompute_subset or whole_frame:
             self.apply_transform(
@@ -582,7 +602,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                               time=None, splines=self.cbspline)
                 self._init_energy()
                 return self._cost.mean()+1
-            elif False:
+            else:
                 self._slab_slice_mask.fill(-1)
                 self._samples_dist.fill(0)
                 sigma = .5
@@ -599,31 +619,17 @@ class EPIOnlineRealign(EPIOnlineResample):
                 print 'new subset %d'%self._n_slab_samples
                 self._reg_cost = np.sum(self._cost[np.logical_not(mm)])
         else:
+            old_coords = self.slab_class_voxels[:,self._slab_slice_mask>=0].copy()
             self.apply_transform(
                 transform,
                 self.class_coords[:,self._reliable_samples],
                 self.slab_class_voxels,
                 self.fmap_values, self._slab_slice_mask>=0,
                 phase_dim=data.shape[self.pe_dir])
-
-        ################################
-        self._slab_slice_mask.fill(-1)
-        self._samples_dist.fill(0)
-        sigma = .5
-        for s in slab:
-            mm = np.all(np.abs(self.slab_class_voxels[..., self.slice_axis]-s)<1,0)
-            gw = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/2/sigma**2)
-            closer = np.all(gw > self._samples_dist[:,mm], 0)
-            mm[mm] = closer
-            self._slab_slice_mask[mm] = s
-            self._samples_dist[:,mm] = gw[:,closer]
-                
-        mm[:] = self._slab_slice_mask >= 0
-        self._n_slab_samples = np.count_nonzero(mm)
-        self._reg_cost = np.sum(self._cost[np.logical_not(mm)])
-        #################################
+            #print np.abs(old_coords - self.slab_class_voxels[:,self._slab_slice_mask>=0]).mean(1)
 
         ofst = 0
+        old_samples = self._samples.copy()
         for si, s in enumerate(slab):
             mm = self._slab_slice_mask==s
             cnt = np.count_nonzero(mm)
@@ -631,14 +637,20 @@ class EPIOnlineRealign(EPIOnlineResample):
             _cspline_sample2d(self._samples[:,ofst:ofst+cnt], self.cbspline[...,si], crds[...,0],crds[...,1])
             ofst += cnt
 
-        sm = self._samples[:,:ofst].sum(0)
         mm = self._slab_slice_mask>=0
-        weighed_samples = (self._samples_dist[:,:ofst]*self._samples[:,:ofst])+(
+        weighted_samples = (self._samples_dist[:,mm]*self._samples[:,:ofst])+(
             (1-self._samples_dist[:,mm])*self._reg_samples[:,mm])
-        cost = 200*np.diff(weighed_samples,1,0)[0]/sm
+        sm = weighted_samples.sum(0)
+        cost = 200*np.diff(weighted_samples,1,0)[0]/sm
         cost[np.abs(sm)<1e-6] = 0
-        cost = np.tanh(self.bbr_slope*cost-self.bbr_offset)
-        cur_cost = 1+(cost.sum()+self._reg_cost)/self._reg_samples.size
+        cost[:] = np.tanh(self.bbr_slope*cost-self.bbr_offset)
+        cur_cost = 1+(cost.sum()+self._reg_cost)/self._reg_samples.shape[1]
+
+        if update_reg_samples:
+            print 'updated cost ', (self._reg_samples[:,mm]-weighted_samples).std(1)
+            self._reg_samples[:,mm] = weighted_samples
+            
+
         return cur_cost
 
 
@@ -715,8 +727,10 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     pvmaps, reg, frame_shape, -1,
                     mask = ext_mask)
 #                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
+                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-1)>0
                 # temporary fix, should fix the mask problem
-                epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
+                #epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
+                #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
             cdata[:] = data
             cdata2.fill(0)
             for sli,sln in enumerate(slab):
