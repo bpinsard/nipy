@@ -99,7 +99,6 @@ class EPIOnlineResample(object):
         for sl, t in enumerate(transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        self.points=points
         phase_vec /= sl
         epi_mask = slice(0, None)
         if mask:
