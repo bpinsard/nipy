@@ -454,14 +454,14 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         ndim_state = 12
         transition_matrix = np.eye(ndim_state)
-#        transition_matrix[:6,6:] = np.eye(6)*1e-4 # TODO: set speed
+        transition_matrix[:6,6:] = np.eye(6)*1e-4 # TODO: set speed
 #        self.samples = np.empty((2,n_samples_total))
         
         def trans_func(state):
             return transition_matrix.dot(state)
 
         initial_state_mean = np.hstack([last_reg.param.copy()*last_reg.precond[:6], np.zeros(6)])
-        initial_state_covariance = np.diag(([1]*3+[(np.pi/180.)**2]*3)*2)
+        initial_state_covariance = np.diag(last_reg.precond[:6].tolist()*2)
 
         initial_state_mean = initial_state_mean[:ndim_state]
         initial_state_covariance = initial_state_covariance[:ndim_state,:ndim_state]
@@ -480,10 +480,12 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         raw_motion = [last_reg.param[:6].copy()*last_reg.precond[:6]]
 
+        observation_matrix = np.eye(12)
+
         from pykalman import KalmanFilter
         kf = KalmanFilter(
             transition_matrix,
-            None, #observation_matrix,
+            observation_matrix,
             None, #data.initial_transition_covariance,
             None, #data.initial_observation_covariance,
             None, #transition_offsets,
