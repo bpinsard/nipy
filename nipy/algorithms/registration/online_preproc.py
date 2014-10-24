@@ -460,7 +460,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 #            return transition_matrix.dot(state)
 
         initial_state_mean = np.hstack([last_reg.param.copy()*last_reg.precond[:6], np.zeros(6)])
-        initial_state_covariance = np.diag(last_reg.precond[:6].tolist()*2)*100
+        initial_state_covariance = np.diag(last_reg.precond[:6].tolist()*2)
 
         initial_state_mean = initial_state_mean[:ndim_state]
         initial_state_covariance = initial_state_covariance[:ndim_state,:ndim_state]
@@ -505,6 +505,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             for si,s in enumerate(sl):
                 current_volume[...,s] = sl_data[...,si]
             
+            new_reg.param = self._register_slab(sl, sl_data, new_reg)
+
             pos = new_reg.param[:6]*new_reg.precond[:6]
             estim_state = np.hstack([
                     pos,
@@ -520,7 +522,6 @@ class EPIOnlineRealign(EPIOnlineResample):
             filtered_state_covariances.append(filt_state_cov)
 
             new_reg.param = filtered_state_means[-1][:6]/new_reg.precond[:6]
-            new_reg.param = self._register_slab(sl, sl_data, new_reg)
             
             yield fr, sl, new_reg.as_affine(), sl_data
             try:
@@ -588,9 +589,9 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         # if change of test points z is above threshold recompute subset
         test_points = np.array([(x,y,z) for x in (0,data.shape[0]) for y in (0, data.shape[1]) for z in (0,self.nslices)])
-        recompute_subset = np.abs(
-            self._last_subsampling_transform.apply(test_points) -
-            transform.apply(test_points))[:,sa].max() > 0.05
+        recompute_subset = False #np.abs(
+#            self._last_subsampling_transform.apply(test_points) -
+#            transform.apply(test_points))[:,sa].max() > 0.05
         
         if recompute_subset or force_recompute_subset or whole_frame:
             self.apply_transform(
@@ -636,12 +637,13 @@ class EPIOnlineRealign(EPIOnlineResample):
             cnt = np.count_nonzero(mm)
             if cnt>0:
                 crds = self.slab_class_voxels[:,mm][...,slice_axes]
+                #self._samples_dist[:,mm] = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/2/sigma**2)
                 #_cspline_sample2d(self._samples[0,ofst:ofst+cnt], self.cbspline[...,si], crds[0,...,0],crds[0,...,1])
                 #_cspline_sample2d(self._samples[1,ofst:ofst+cnt], self.cbspline[...,si], crds[1,...,0],crds[1,...,1])
                 self._samples[:,ofst:ofst+cnt] = map_coordinates(data[...,si].astype(np.float), crds.reshape(-1,2).T).reshape(2,-1)
                 ofst += cnt
 
-        mm = self._slab_slice_mask>=0
+        mm[:] = self._slab_slice_mask>=0
         weighted_samples = (self._samples_dist[:,mm]*self._samples[:,:ofst])+(
             (1-self._samples_dist[:,mm])*self._reg_samples[:,mm])
         sm = weighted_samples.sum(0)
@@ -654,7 +656,6 @@ class EPIOnlineRealign(EPIOnlineResample):
             print 'updated cost ', (self._reg_samples[:,mm]-weighted_samples).std(1)
             self._reg_samples[:,mm] = weighted_samples
             
-
         return cur_cost
 
 
@@ -678,25 +679,18 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.optimizer_kwargs.setdefault('maxiter', MAXITER)
         self.optimizer_kwargs.setdefault('maxfun', MAXFUN)
         self.use_derivatives = use_derivatives(self.optimizer)
-
-    def explore_cost(self, data, transform, values,
-                     bbr_slope=.5, bbr_offset=0, factor=200):
+        
+    def explore_cost(self, slab, transform, data, values):
+        tt = transform.copy()
         costs = np.empty((len(transform.param),len(values)))
-        self.sample(data, transform, force_recompute_subset=True)
-        t2 = transform.copy()
         for p in range(len(transform.param)):
+            self.sample_cost(slab, data,transform, force_recompute_subset=True)
+            mmm=np.zeros(len(transform.param))
+            mmm[p]=1
             for idx,delta in enumerate(values):
-                params = transform.param.copy()
-                params[p] += delta
-                t2.param = params
-                n.sample(data, t2)
-                sm = n.data.sum(0)
-                n._percent_contrast[:] = factor*np.diff(n.data,1,0)/sm
-                n._percent_contrast[np.abs(sm)<1e-6] = 0
-                costs[p,idx] = 1.0+np.tanh(bbr_slope*n._percent_contrast-bbr_offset).mean()
-                print params, costs[p,idx]
-        return costs
-                
+                tt.param = transform.param+(mmm*delta)
+                costs[p,idx]  = self.sample_cost(slab, data, tt)
+        return costs                
 
 
 class EPIOnlineRealignFilter(EPIOnlineResample):
