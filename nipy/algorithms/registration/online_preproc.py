@@ -347,6 +347,22 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         self.slab_class_voxels = np.empty(self.class_coords.shape,np.double)
 
+
+    def center_of_mass_init(self, data1):
+        # simple center of mass alignment for initialization
+        mdata = self.mask.get_data()
+        c_ref = np.squeeze(
+            np.apply_over_axes(
+                np.sum,(np.mgrid[[slice(0,s) for s in mdata.shape]]*
+                        mdata[np.newaxis]),[1,2,3])/float(mdata.sum()))
+        c_frame1 = np.squeeze(
+            np.apply_over_axes(
+                np.sum,(np.mgrid[[slice(0,s) for s in data1.shape]]*
+                        data1[np.newaxis]),[1,2,3])/float(data1.sum()))
+        tr = self.mask.get_affine().dot(c_ref.tolist()+[1])-\
+            self.affine.dot(c_frame1.tolist()+[1])
+        return np.hstack([tr[:3],[0]*3])
+
     def process(self, stack, yield_raw=False):
 
         self.slabs = []
@@ -365,21 +381,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         last_reg = self.affine_class()
         if self.init_reg is not None:
             if self.init_reg == 'auto':
-                # simple center of mass alignment for initialization
-                mdata = self.mask.get_data()
-                c_ref = np.squeeze(
-                    np.apply_over_axes(
-                        np.sum,(np.mgrid[[slice(0,s) for s in mdata.shape]]*
-                                mdata[np.newaxis]),[1,2,3])/float(mdata.sum()))
-                c_frame1 = np.squeeze(
-                    np.apply_over_axes(
-                        np.sum,(np.mgrid[[slice(0,s) for s in data1.shape]]*
-                                data1[np.newaxis]),[1,2,3])/float(data1.sum()))
-                tr = self.mask.get_affine().dot(c_ref.tolist()+[1])-\
-                    self.affine.dot(c_frame1.tolist()+[1])
-                    
-                print tr
-                last_reg.param = np.hstack([tr[:3],[0]*3])
+                last_reg.param = self.center_of_mass_init(data1)
             else:
                 last_reg.from_matrix44(self.init_reg)
         self._n_samples = self.slab_class_voxels.shape[1]
