@@ -21,6 +21,7 @@ from .slice_motion import surface_to_samples, compute_sigloss, intensity_factor
 
 
 import time
+import itertools
 
 # Module globals
 SLICE_ORDER = 'ascending'
@@ -391,10 +392,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._cost = np.empty(self._n_samples)
 
         last_reg.param = self._register_slab(range(self.nslices), data1, last_reg, whole_frame=True)
-        #suppose first frame was motion free
-#        self.epi_mask=self.inv_resample(
-#            self.mask, last_reg.as_affine().dot(self.affine), data1.shape) > 0
-        
         # compute values for initial registration
         self.apply_transform(
             last_reg,
