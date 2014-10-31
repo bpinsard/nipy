@@ -439,8 +439,6 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._samples_dist = np.empty((2,self._n_samples))
         self._cost = np.empty(self._n_samples)
         self.optimizer='cg'
-#        self.use_derivatives = True
-#        self.optimizer_kwargs.setdefault('gtol', 1e-7)
 
         n_samples_total = np.count_nonzero(self._reliable_samples)
         # reestimate first frame registration  with only reliable samples
@@ -450,48 +448,45 @@ class EPIOnlineRealign(EPIOnlineResample):
         slice_axes[self.slice_axis] = False
         slice_spline = np.empty(stack._shape[:2])
 
-        ndim_state = 12
+        ndim_state = 6
         transition_matrix = np.eye(ndim_state)
-        transition_matrix[:6,6:] = np.eye(6) # TODO: set speed
-#        self.samples = np.empty((2,n_samples_total))
-        
-#        def trans_func(state):
-#            return transition_matrix.dot(state)
+        transition_covariance = np.diag([0.001]*6+[.1]*6) # change in position should first occur by change in speed !?
+        if ndim_state>6:
+            transition_matrix[:6,6:] = np.eye(6) # TODO: set speed
+            # transition_covariance[:6,6:] = np.eye(6)
+        transition_covariance = transition_covariance[:ndim_state,:ndim_state]
 
-        initial_state_mean = np.hstack([last_reg.param.copy()*last_reg.precond[:6], np.zeros(6)])
-        initial_state_covariance = np.diag(last_reg.precond[:6].tolist()*2)
-
+        initial_state_mean = np.hstack([last_reg.param.copy(), np.zeros(6)])
+        initial_state_covariance = np.eye(ndim_state)*.001 # let say we are quite confident about init volume registration
         initial_state_mean = initial_state_mean[:ndim_state]
         initial_state_covariance = initial_state_covariance[:ndim_state,:ndim_state]
         
-        # to be checked, could be used to weigh samples
-#        observation_covariance = np.empty(n_samples_total)
-#        observation_covariance.fill(1./n_samples_total)
-
-        initial_observation_covariance = np.diag(last_reg.precond[:6].tolist()*2)
+        observation_matrix = np.eye(ndim_state)
+        # the covariance of observation should be proportional to the sensitivity of the cost function to parameters
+        observation_covariance = np.eye(ndim_state)*100
+        observation_covariance = observation_covariance[:ndim_state,:ndim_state]
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
         current_volume = data1.copy()
         fr,sl,aff,tt,sl_data = stack_it.next()
         
-        filtered_state_means = [initial_state_mean]
-        filtered_state_covariances = [initial_state_covariance]
+        self.filtered_state_means = [initial_state_mean]
+        self.filtered_state_covariances = [initial_state_covariance]
 
-        raw_motion = [last_reg.param[:6].copy()*last_reg.precond[:6]]
+        self.raw_motion = [last_reg.param[:6].copy()]
 
-        observation_matrix = np.eye(12)
 
         from pykalman import KalmanFilter
         kf = KalmanFilter(
-            transition_matrix,
-            observation_matrix,
-            None, #data.initial_transition_covariance,
-            None, #initial_observation_covariance,
-            None, #transition_offsets,
-            None, #observation_offset,
-            initial_state_mean,
-            initial_state_covariance,
+            transition_matrix, # the transition from one state to the next
+            observation_matrix, # the matrix that translates from states to observation?
+            transition_covariance, # the noise in the transition matrix?
+            observation_covariance, # the noise in the function from state to observation ?
+            None, #transition_offsets, there is no systematic offset
+            None, #observation_offset, there is no systematic offset
+            initial_state_mean, # the best estimate you can have to get started
+            initial_state_covariance, # how confident you are in this estimate?
             random_state = 0,
             n_dim_obs = ndim_state,
             n_dim_state = ndim_state)
@@ -506,21 +501,21 @@ class EPIOnlineRealign(EPIOnlineResample):
             
             new_reg.param = self._register_slab(sl, sl_data, new_reg)
 
-            pos = new_reg.param[:6]*new_reg.precond[:6]
+            pos = new_reg.param[:6]
             estim_state = np.hstack([
                     pos,
-                    pos-filtered_state_means[-1][:6]]) #speed
+                    pos-self.filtered_state_means[-1][:6]]) #speed
             estim_state = estim_state[:ndim_state]
-            raw_motion.append(pos)
+            self.raw_motion.append(pos)
 
             filt_state_mean, filt_state_cov = kf.filter_update(
-                filtered_state_means[-1],
-                filtered_state_covariances[-1],
+                self.filtered_state_means[-1],
+                self.filtered_state_covariances[-1],
                 estim_state)
-            filtered_state_means.append(filt_state_mean)
-            filtered_state_covariances.append(filt_state_cov)
+            self.filtered_state_means.append(filt_state_mean)
+            self.filtered_state_covariances.append(filt_state_cov)
 
-            new_reg.param = filtered_state_means[-1][:6]/new_reg.precond[:6]
+            new_reg.param = filt_state_mean[:6]
             
             yield fr, sl, new_reg.as_affine(), sl_data
             try:
