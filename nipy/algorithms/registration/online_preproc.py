@@ -9,10 +9,6 @@ from ...core.image.image_spaces import (make_xyz_image,
 from .affine import Rigid
 
 from .optimizer import configure_optimizer, use_derivatives
-from ._registration import (_cspline_transform,
-                            _cspline_sample2d,
-                            _cspline_sample3d,
-                            _cspline_sample4d)
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats
 from scipy.ndimage.interpolation import map_coordinates
@@ -75,42 +71,38 @@ class EPIOnlineResample(object):
         self.st_ratio = 1
 
 
-    def resample(self, data, out, voxcoords,time=None, splines=None):
-        if splines is None:
-            splines = _cspline_transform(data)
-        _cspline_sample3d(
-            out,splines,
-            voxcoords[...,0], voxcoords[...,1], voxcoords[...,2],
-            mx=EXTRAPOLATE_SPACE,
-            my=EXTRAPOLATE_SPACE,
-            mz=EXTRAPOLATE_SPACE,)
-        return splines
+    def resample(self, data, out, voxcoords):
+        out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0)).reshape(voxcoords.shape[:-1])
+        return out
 
     def scatter_resample_volume(self, data, out, slabs, transforms, target_transform, mask=False):
         coords = apply_affine(
             target_transform,
-            np.rollaxis(np.mgrid[[slice(0,d) for d in data.shape]],0,4))
+            np.rollaxis(np.mgrid[[slice(0,d) for d in out.shape]],0,4))
         self.scatter_resample(data, out, transforms, coords, mask=mask)
         del coords
 
     def scatter_resample(self, data, out, slabs, transforms, coords, mask=True):
-        points = np.empty(data.shape+(3,))
-        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in data.shape]],0,4)
+        vol = np.empty(data[0].shape[:2]+(data[0].shape[2]*len(slabs),))
+        points = np.empty(vol.shape+(3,))
+        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol.shape]],0,4)
         phase_vec = np.zeros(3)
+        for sl, d in zip(slabs, data):
+            vol[...,sl] = d
         for sl, t in zip(slabs, transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= data.shape[self.slice_axis]
+        phase_vec /= vol.shape[self.slice_axis]
         epi_mask = slice(0, None)
         if mask:
-            epi_mask = self.inv_resample(self.mask, transforms[0], data.shape, 0)>0
+            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, 0)>0
             epi_mask[:] = binary_dilation(epi_mask, iterations=2)
             points = points[epi_mask]
         if not self.fmap is None:
-            self._precompute_sample_fmap(coords, data.shape)
+            self._precompute_sample_fmap(coords, vol.shape)
             coords += self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
         print 'create interpolator'
-        lndi = LinearNDInterpolator(points.reshape(-1,3), data[epi_mask].ravel())
+        lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
         print 'interpolate'
         out[:] = lndi(coords.reshape(-1,3)).reshape(out.shape)
 
@@ -373,7 +365,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         # dicom list : slices must be provided in acquisition order
 
         # register first frame
-        frame_iterator = stack.iter_frame()
+        frame_iterator = stack.iter_frame(queue_dicoms=True)
         nvol, self.affine, data1 = frame_iterator.next()
         data1 = data1.astype(np.float)
         self.slice_order = stack._slice_order
@@ -390,6 +382,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._reliable_samples = np.ones(self._n_samples, np.bool)
         self._reg_samples = np.empty((2,self._n_samples))
         self._cost = np.empty(self._n_samples)
+        self._samples_mask = np.empty(self._n_samples, dtype=np.bool)
 
         last_reg.param = self._register_slab(range(self.nslices), data1, last_reg, whole_frame=True)
         # compute values for initial registration
@@ -398,11 +391,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             self.class_coords, self.slab_class_voxels,
             self.fmap_values, phase_dim=data1.shape[self.pe_dir])
 
-        cbspline_vol0 = _cspline_transform(data1)
-        self.resample(data1[..., np.newaxis],
-                      self._reg_samples,
-                      self.slab_class_voxels,
-                      cbspline_vol0)
+        self.resample(data1, self._reg_samples, self.slab_class_voxels)
 
         # remove samples that does not have expected contrast (ie sigloss)
         # if fieldmap provided does it using the computed sigloss
@@ -432,10 +421,11 @@ class EPIOnlineRealign(EPIOnlineResample):
         self._reg_samples = self._reg_samples[:,self._reliable_samples]
         self.slab_class_voxels = self.slab_class_voxels[:,self._reliable_samples]
         self.fmap_values = self.fmap_values[:,self._reliable_samples]
-        del self._slab_slice_mask, self._cost
+        del self._slab_slice_mask, self._cost, self._samples_mask
         self._n_samples = np.count_nonzero(self._reliable_samples)
         self._slab_slice_mask = np.empty(self._n_samples, np.int8)
         self._samples = np.empty((2,self._n_samples))
+        self._samples_mask = np.empty(self._n_samples,dtype=np.bool)
         self._samples_dist = np.empty((2,self._n_samples))
         self._cost = np.empty(self._n_samples)
         self.optimizer='cg'
@@ -443,6 +433,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         n_samples_total = np.count_nonzero(self._reliable_samples)
         # reestimate first frame registration  with only reliable samples
         last_reg.param = self._register_slab(range(self.nslices), data1, last_reg, whole_frame=True)
+
+        self.full_frame_reg = last_reg.copy()
         
         slice_axes = np.ones(3, np.bool)
         slice_axes[self.slice_axis] = False
@@ -450,7 +442,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
         ndim_state = 6
         transition_matrix = np.eye(ndim_state)
-        transition_covariance = np.diag([0.001]*6+[.1]*6) # change in position should first occur by change in speed !?
+        transition_covariance = np.diag([.01]*6+[.1]*6) # change in position should first occur by change in speed !?
+        transition_covariance=np.diag([.05,.05,.05,.001,.001,.001])
         if ndim_state>6:
             transition_matrix[:6,6:] = np.eye(6) # TODO: set speed
             # transition_covariance[:6,6:] = np.eye(6)
@@ -463,8 +456,9 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         observation_matrix = np.eye(ndim_state)
         # the covariance of observation should be proportional to the sensitivity of the cost function to parameters
-        observation_covariance = np.eye(ndim_state)*100
+        observation_covariance = np.eye(ndim_state)*5
         observation_covariance = observation_covariance[:ndim_state,:ndim_state]
+        observation_covariance = np.diag([.1,.1,.1,.01,.01,.01])
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
@@ -526,16 +520,6 @@ class EPIOnlineRealign(EPIOnlineResample):
     def _register_slab(self, slab, slab_data, init_transform, whole_frame=False):
         print 'register slab', slab
         
-        if hasattr(self,'cbspline') and slab_data.shape != self.cbspline.shape:
-            del self.cbspline
-        if not hasattr(self,'cbspline'):
-            self.cbspline = np.empty(slab_data.shape, np.double)
-        if whole_frame:
-            self.cbspline[:] = _cspline_transform(slab_data)
-        else:
-            for s in range(slab_data.shape[-1]):
-                self.cbspline[:, :, s] = _cspline_transform(slab_data[:, :, s])
-
         transform = self.affine_class(init_transform.as_affine())
         self.sample_cost(slab, slab_data, transform,
                          force_recompute_subset=True,
@@ -580,12 +564,13 @@ class EPIOnlineRealign(EPIOnlineResample):
         sa = self.slice_axis
         slice_axes = np.ones(3, np.bool)
         slice_axes[sa] = False
+        mm = self._samples_mask
 
         # if change of test points z is above threshold recompute subset
         test_points = np.array([(x,y,z) for x in (0,data.shape[0]) for y in (0, data.shape[1]) for z in (0,self.nslices)])
-        recompute_subset = False #np.abs(
-#            self._last_subsampling_transform.apply(test_points) -
-#            transform.apply(test_points))[:,sa].max() > 0.05
+        recompute_subset = np.abs(
+            self._last_subsampling_transform.apply(test_points) -
+            transform.apply(test_points))[:,sa].max() > 0.01
         
         if recompute_subset or force_recompute_subset or whole_frame:
             self.apply_transform(
@@ -595,27 +580,26 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._last_subsampling_transform = transform.copy()
 
             if whole_frame:
-                self.resample(data, self._reg_samples, self.slab_class_voxels,
-                              time=None, splines=self.cbspline)
+                self.resample(data, self._reg_samples, self.slab_class_voxels)
                 self._init_energy()
                 return self._cost.mean()+1
             else:
                 self._slab_slice_mask.fill(-1)
                 self._samples_dist.fill(0)
                 for s in slab:
-                    mm = np.all(np.abs(self.slab_class_voxels[..., self.slice_axis]-s)<1,0)
-                    gw = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/2/sigma**2)
-                    closer = np.all(gw > self._samples_dist[:,mm], 0)
-                    mm[mm] = closer
+                    mm[:] = np.any(np.abs(self.slab_class_voxels[..., self.slice_axis]-s)<1,0)
+                    gw = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/(2*sigma**2))
+#                    closer = np.all(gw > self._samples_dist[:,mm], 0)
+#                    mm[mm] = closer
                     self._slab_slice_mask[mm] = s
-                    self._samples_dist[:,mm] = gw[:,closer]
+                    self._samples_dist[:,mm] = gw#[:,closer]
                 
                 mm[:] = self._slab_slice_mask >= 0
                 self._n_slab_samples = np.count_nonzero(mm)
                 print 'new subset %d'%self._n_slab_samples
                 self._reg_cost = np.sum(self._cost[np.logical_not(mm)])
         else:
-            old_coords = self.slab_class_voxels[:,self._slab_slice_mask>=0].copy()
+            # old_coords = self.slab_class_voxels[:,self._slab_slice_mask>=0].copy()
             self.apply_transform(
                 transform,
                 self.class_coords[:,self._reliable_samples],
@@ -624,22 +608,20 @@ class EPIOnlineRealign(EPIOnlineResample):
                 phase_dim=data.shape[self.pe_dir])
             #print np.abs(old_coords - self.slab_class_voxels[:,self._slab_slice_mask>=0]).mean(1)
 
+        #
         ofst = 0
         old_samples = self._samples.copy()
         for si, s in enumerate(slab):
-            mm = self._slab_slice_mask==s
+            mm[:] = self._slab_slice_mask==s
             cnt = np.count_nonzero(mm)
             if cnt>0:
                 crds = self.slab_class_voxels[:,mm][...,slice_axes]
-                #self._samples_dist[:,mm] = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/2/sigma**2)
-                #_cspline_sample2d(self._samples[0,ofst:ofst+cnt], self.cbspline[...,si], crds[0,...,0],crds[0,...,1])
-                #_cspline_sample2d(self._samples[1,ofst:ofst+cnt], self.cbspline[...,si], crds[1,...,0],crds[1,...,1])
+                self._samples_dist[:,mm] = np.exp(-(self.slab_class_voxels[:,mm,self.slice_axis]-s)**2/(2*sigma**2))
                 self._samples[:,ofst:ofst+cnt] = map_coordinates(data[...,si].astype(np.float), crds.reshape(-1,2).T).reshape(2,-1)
                 ofst += cnt
-
+        
         mm[:] = self._slab_slice_mask>=0
-        weighted_samples = (self._samples_dist[:,mm]*self._samples[:,:ofst])+(
-            (1-self._samples_dist[:,mm])*self._reg_samples[:,mm])
+        weighted_samples = (self._samples_dist[:,mm]*self._samples[:,:ofst])+((1-self._samples_dist[:,mm])*self._reg_samples[:,mm])
         sm = weighted_samples.sum(0)
         cost = 200*np.diff(weighted_samples,1,0)[0]/sm
         cost[np.abs(sm)<1e-6] = 0
@@ -649,6 +631,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         if update_reg_samples:
             print 'updated cost ', (self._reg_samples[:,mm]-weighted_samples).std(1)
             self._reg_samples[:,mm] = weighted_samples
+            self._init_energy()
             
         return cur_cost
 
@@ -674,16 +657,16 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.optimizer_kwargs.setdefault('maxfun', MAXFUN)
         self.use_derivatives = use_derivatives(self.optimizer)
         
-    def explore_cost(self, slab, transform, data, values):
+    def explore_cost(self, slab, transform, data, values, force_recompute_subset=False, sigma=.3):
         tt = transform.copy()
         costs = np.empty((len(transform.param),len(values)))
         for p in range(len(transform.param)):
-            self.sample_cost(slab, data,transform, force_recompute_subset=True)
+            self.sample_cost(slab, data,transform, force_recompute_subset=True, sigma=sigma)
             mmm=np.zeros(len(transform.param))
             mmm[p]=1
             for idx,delta in enumerate(values):
                 tt.param = transform.param+(mmm*delta)
-                costs[p,idx]  = self.sample_cost(slab, data, tt)
+                costs[p,idx]  = self.sample_cost(slab, data, tt, force_recompute_subset, sigma=sigma)
         return costs                
 
 
