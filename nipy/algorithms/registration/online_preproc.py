@@ -92,7 +92,7 @@ class EPIOnlineResample(object):
         for sl, t in zip(slabs, transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= vol.shape[self.slice_axis]
+        phase_vec /= len(slab)
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, 0)>0
@@ -511,7 +511,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
             new_reg.param = filt_state_mean[:6]
             
-            yield fr, sl, new_reg.as_affine(), sl_data
+            yield fr, sl, new_reg.as_affine().dot(aff), sl_data
             try:
                 fr,sl,aff,tt,sl_data = stack_it.next()
             except StopIteration:
@@ -745,7 +745,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
-            yield fr, slab, reg, cdata, cdata2
+            yield fr, slab, reg, cdata2
         return
 
     def process(self, stack, *args, **kwargs):
@@ -753,7 +753,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
         self.correct(
             super(EPIOnlineRealignFilter,self).process(stack, yield_raw=True),
             *args, **kwargs)
-
     
             
 def filenames_to_dicoms(fnames):
