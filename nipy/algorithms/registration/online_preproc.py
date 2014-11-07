@@ -92,7 +92,7 @@ class EPIOnlineResample(object):
         for sl, t in zip(slabs, transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= len(slab)
+        phase_vec /= len(slabs)
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, 0)>0
@@ -672,7 +672,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
-    def correct(self, realigned, pvmaps, frame_shape, poly_order = 2, do_n4=False, white_idx=1,
+    def correct(self, realigned, pvmaps, frame_shape, sig_smth=12, white_idx=1,
                 maxiter = 32, residual_tol = 1e-3):
         
         float_mask = nb.Nifti1Image(
@@ -691,7 +691,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 cdata2 = np.zeros(data.shape)
                 epi_pvf = np.empty(frame_shape+(pvmaps.shape[-1],))
                 epi_mask = np.zeros(frame_shape, dtype=np.bool)
-                prev_reg = 0
+                prev_reg = np.inf
                 white_wght = np.empty(data.shape[:2])
                 smooth_white_wght = np.empty(data.shape[:2])
                 res = np.empty(data.shape[:2])
