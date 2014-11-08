@@ -83,9 +83,12 @@ class EPIOnlineResample(object):
         del coords
 
     def scatter_resample(self, data, out, slabs, transforms, coords, mask=True):
-        vol = np.empty(data[0].shape[:2]+(data[0].shape[2]*len(slabs),))
+        nslices = data[0].shape[2]*len(slabs)
+        vol = np.empty(data[0].shape[:2]+(nslices,))
+        print vol.shape
         points = np.empty(vol.shape+(3,))
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol.shape]],0,4)
+        print voxs.shape
         phase_vec = np.zeros(3)
         for sl, d in zip(slabs, data):
             vol[...,sl] = d
@@ -745,7 +748,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
-            yield fr, slab, reg, cdata2
+            yield fr, slab, reg, cdata2.copy()
         return
 
     def process(self, stack, *args, **kwargs):
