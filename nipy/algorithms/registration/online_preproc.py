@@ -459,17 +459,17 @@ class EPIOnlineRealign(EPIOnlineResample):
         transition_covariance = transition_covariance[:ndim_state,:ndim_state]
 
         initial_state_mean = np.hstack([last_reg.param.copy(), np.zeros(6)])
-        initial_state_covariance = np.eye(ndim_state)*.001 # let say we are quite confident about init volume registration
+        initial_state_covariance = np.eye(ndim_state)*.01 # let say we are quite confident about init volume registration
         initial_state_mean = initial_state_mean[:ndim_state]
         initial_state_covariance = initial_state_covariance[:ndim_state,:ndim_state]
         
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
-        observation_variance_inv = np.ones(self._n_samples)#/self._n_samples
+        observation_variance = np.ones(self._n_samples)*self._n_samples
 
-        observation_variance_inv = (1-np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))*.1
-        observation_variance_inv[np.isnan(observation_variance_inv)]=0
-        observation_variance_inv[observation_variance_inv<0]=0
+#        observation_variance = (np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))
+#        observation_variance[np.isnan(observation_variance)]=0
+#        observation_variance[observation_variance<0]=0
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
@@ -483,8 +483,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         new_reg = last_reg.copy()
 
-        convergence_threshold = 1e-10
-        niter_max = 1
+        convergence_threshold = 1e-5
+        niter_max = 12
         mm = self._samples_mask
 
         while stack_has_data:
@@ -499,27 +499,33 @@ class EPIOnlineRealign(EPIOnlineResample):
             state_covariance = pred_covariance.copy()
 
             convergence, niter = np.inf, 0
+            new_reg.param = estim_state[:6]
             self.sample_cost_jacobian(sl, sl_data, new_reg, force_recompute_subset=True)
             if self._n_slab_samples < 50:
                 print 'not enough points, skipping slab'
             else:
                 while convergence > convergence_threshold and niter < niter_max:
-                    new_reg.param = estim_state[:6]
-                    self.sample_cost_jacobian(sl, sl_data, new_reg)
-#                    mm[:] = self._slab_slice_mask>=0
+                    if niter>0:
+                        new_reg.param = estim_state[:6]
+                        self.sample_cost_jacobian(sl, sl_data, new_reg)
                     cost, jac = self._cost[0], self._cost[1:]
-                    mm[:] = self._slab_slice_mask>=0 # this might be redundant, allready updated in sample_cost_jacobian
-                    mm[mm] = observation_variance_inv[mm]!=0
-                    mm[mm] = np.any(jac[:,mm]!=0,0)
-#                    wjac = jac[:,mm]*observation_variance_inv[mm]
-                    #wjac = jac*observation_variance_inv
-                    #kalman_gain = np.linalg.inv(wjac.dot(jac.T) + state_covariance).dot(wjac)
-                    kalman_gain = state_covariance.dot(jac[:,mm]).dot(np.linalg.inv(jac[:,mm].T.dot(state_covariance).dot(jac[:,mm])+np.eye(np.count_nonzero(mm))*observation_variance_inv[mm]))
-                    print kalman_gain.shape
+                    mm[:] = self._slab_slice_mask>=0 # this might be redundant, already updated in sample_cost_jacobian
+                    mm[mm] = observation_variance[mm]!=0
+                    mm[mm] = np.any(np.logical_not(jac[:,mm]==0),0)
+                    kalman_gain = pred_covariance.dot(jac[:,mm]).dot(
+                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])
+                                      +np.eye(np.count_nonzero(mm))*observation_variance[mm]))
                     estim_state_old = estim_state.copy()
-                    estim_state[:] = pred_state + kalman_gain.dot(cost[mm]-jac[:,mm].T.dot(pred_state-estim_state))
-#                    estim_state[:] = pred_state + kalman_gain.dot(cost - jac.T.dot(pred_state-estim_state) )
-#                    state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac.T)).dot(state_covariance)
+#                    estim_state[:] = estim_state + kalman_gain.dot(cost[mm]-jac[:,mm].T.dot(pred_state-estim_state))
+#                    state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(state_covariance)
+                    estim_state[:] = estim_state + kalman_gain.dot(cost[mm])
+                    state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(state_covariance)
+
+                    ## according to paper http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=6637957
+#                    estim_state[:] += state_covariance.dot((jac[:,mm].T*(observation_variance[mm,np.newaxis]**-1)).T.dot(cost[mm])) \
+#                        - state_covariance.dot(np.linalg.inv(pred_covariance)).dot(estim_state-pred_state)
+#                    state_covariance = pred_covariance.dot(np.eye(ndim_state)-jac[:,mm]...
+
                     convergence = np.sqrt(((estim_state_old-estim_state)**2).sum())
                     niter += 1
                     print ("%.12f : "+"%.5f,\t"*6)%((convergence,) +tuple(estim_state[:6]))
@@ -527,14 +533,13 @@ class EPIOnlineRealign(EPIOnlineResample):
                         raise RuntimeError
                 if niter==niter_max:
                     print "maximum iteration number exceeded"
-
-                state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(self.filtered_state_covariances[-1])
-#                state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac.T)).dot(state_covariance)
+#                state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(state_covariance)
 
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
             print '_'*80
             print ('%5f :\t' + '%.5f,'*6)%((self._cost[0].mean(),)+tuple(estim_state))
+            print 'update : ', ('%.5f,'*6)%tuple(estim_state-self.filtered_state_means[-2])
             print '_'*80
             new_reg.param = estim_state[:6]
             yield fr, sl, new_reg.as_affine().dot(aff), sl_data
@@ -590,7 +595,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         slice_axes = np.ones(3, np.bool)
         slice_axes[sa] = False
 
-        epsilon = 1e-5
+        epsilon = 1e-4
         extend, resolution = 2,1000
 
         mm = self._samples_mask
@@ -610,7 +615,10 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._slab_slice_mask.fill(-1)
             self._samples_dist.fill(0)
             for s in slab:
-                mm[:] = np.any(np.abs(self.slab_class_voxels[..., self.slice_axis]-s)<.5,0)
+                mm[:] = np.all(np.abs(self.slab_class_voxels[..., self.slice_axis]-s)<.5,0)
+                nsamp = np.count_nonzero(mm)
+                prop = 1000/float(nsamp+1)
+                mm[mm] = np.random.random(nsamp) < prop
                 self._slab_slice_mask[mm] = s                
             mm[:] = self._slab_slice_mask >= 0
             sm = self._reg_samples.sum(0)
@@ -623,6 +631,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             del sm
             self._n_slab_samples = np.count_nonzero(mm)
             print 'new subset %d'%self._n_slab_samples
+            if self._n_slab_samples < 1:
+                return
         else:
             self.apply_transform(
                 transform,
@@ -653,6 +663,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 dist2slice = (np.abs(crds[sa]-s)*resolution).astype(np.int)
                 dist2slice[dist2slice>=self._precomp_negexp.size] = -1
                 self._samples_dist[:,:,ofst:ofst+cnt] = self._precomp_negexp[dist2slice]
+                #"""
                 self._samples[:,:2,ofst:ofst+cnt] = (
                     map_coordinates(data[...,si].astype(np.float),
                                     crds[slice_axes].reshape(2,-1)).reshape(7,2,-1)*self._samples_dist[...,ofst:ofst+cnt] +
@@ -661,19 +672,28 @@ class EPIOnlineRealign(EPIOnlineResample):
                     map_coordinates(
                         data[...,si].astype(np.float),
                         crds[slice_axes].mean(2).reshape(2,-1)).reshape(7,-1)*self._samples_dist[...,ofst:ofst+cnt].mean(1) +
-                    self._reg_samples[:,mm].mean(1)*(1-self._samples_dist[...,ofst:ofst+cnt].mean(1)))
-
+                    self._reg_samples[:,mm].mean(0)*(1-self._samples_dist[...,ofst:ofst+cnt].mean(1)))
+                """
+                self._samples[:,:2,ofst:ofst+cnt] = map_coordinates(data[...,si].astype(np.float),
+                                                                    crds[slice_axes].reshape(2,-1)).reshape(7,2,-1)
+                self._samples[:,2,ofst:ofst+cnt] = map_coordinates(
+                    data[...,si].astype(np.float),
+                    crds[slice_axes].mean(2).reshape(2,-1)).reshape(7,-1)
+                    """
                 ofst += cnt
                 del crds
 
         mm[:] = self._slab_slice_mask>=0
-        sm = self._samples[...,:ofst].sum(1)
-        self._cost[:,mm] = 200*np.diff(self._samples[...,:ofst],1,1)[0]/sm
-        mm2 = mm.copy()
-        mm2[mm2] = np.abs(sm)<1e-6
-        self._cost[:,mm2] = 0
-        del mm2
-        self._cost[:,mm] = 1+np.tanh(self.bbr_slope*self._cost[:,mm]-self.bbr_offset)
+#        sm = np.abs(np.diff(self._samples[:,:2,:ofst],1,1)[:,0])
+        sm = self._samples[:,:2,:ofst].sum(1)
+
+#        self._cost[:,mm] = 200*np.diff(self._samples[...,:ofst],1,1)[0]/sm
+        self._cost[:,mm] = (self._samples[:,:2,:ofst].sum(1)-2*self._samples[:,2,:ofst])/sm
+#        mm2 = mm.copy()
+#        mm2[mm2] = sm<1e-6
+#        self._cost[:,mm2] = 0
+#        del mm2
+        self._cost[:,mm] = np.tanh(self.bbr_slope*self._cost[:,mm]-self.bbr_offset)
         #compute partial derivatives
         self._cost[1:,mm] -= self._cost[0,mm]
         self._cost[1:,mm] /= epsilon
