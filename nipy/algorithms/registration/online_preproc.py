@@ -460,7 +460,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
         observation_variance = np.abs(self._cost[0])*self.iekf_observation_var+1
-
+        ## deweights the high cost vertices
 #        observation_variance = (np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))
 #        observation_variance[np.isnan(observation_variance)]=0
 #        observation_variance[observation_variance<0]=0
@@ -576,18 +576,22 @@ class EPIOnlineRealign(EPIOnlineResample):
             cnt = np.count_nonzero(mm)
             if cnt>0:
                 crds = np.empty((3,7,3,cnt))
-                crds[:,0] = self.slab_bnd_coords[:,mm].transpose(2,0,1)
-                crds[:,1] = (self.slab_bnd_coords[:,mm] - self.slab_bnd_normals[mm]).transpose(2,0,1)
-                crds[:,2] =  (self.slab_bnd_coords[:,mm] + self.slab_bnd_normals[mm]).transpose(2,0,1)
+                crds[:,0,:] = self.slab_bnd_coords[0,mm].T[:,np.newaxis]
+                crds[:,0,1] -= self.slab_bnd_normals[mm].T
+                crds[:,0,2] += self.slab_bnd_normals[mm].T
                 for i in range(6):
                     if i<3:
                         crds[:,i+1] = crds[:,0]
                         crds[i,i+1] += epsilon * transform.precond[i]
+#                        crds[:,i+7] = crds[:,0] + epsilon * transform.precond[i]
                     if i>2:
                         vec = np.zeros(3)
                         vec[i-3] = epsilon * transform.precond[i]
                         m = rotation_vec2mat(vec)
                         crds[:,i+1] = m.dot(crds[:,0].transpose(1,0,2))
+                        vec[i-3] = -epsilon * transform.precond[i]
+                        m = rotation_vec2mat(vec)
+#                        crds[:,i+7] = crds[:,0] + epsilon * transform.precond[i]
                 dist2slice = (np.abs(crds[sa,:,0]-s)*resolution).astype(np.int)
                 dist2slice[dist2slice>=self._precomp_negexp.size] = -1
                 self._samples_dist[:,mm] = self._precomp_negexp[dist2slice]
@@ -596,6 +600,10 @@ class EPIOnlineRealign(EPIOnlineResample):
                         data[...,si].astype(np.float),
                         crds[slice_axes].reshape(2,-1)).reshape(7,3,-1)*self._samples_dist[...,np.newaxis,mm] +
                     self._reg_samples[:,mm]*(1-self._samples_dist[...,np.newaxis,mm]))
+
+#                self._samples[:,:,mm] =  map_coordinates(
+#                    data[...,si].astype(np.float),
+#                    crds[slice_axes].reshape(2,-1)).reshape(7,3,-1)
                 del crds
 
         mm[:] = self._slab_slice_mask>=0
@@ -603,12 +611,13 @@ class EPIOnlineRealign(EPIOnlineResample):
             return
        #sm = self._samples[:,:2,mm].sum(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[:,:2,mm],1,1)))
-        mm[mm] = np.all(sm>0,0)
-        self._cost[:,mm] = (self._samples[:,:2,mm].sum(1)-2*self._samples[:,2,mm])/sm[:,np.all(sm>0,0)]
+        mm[mm] = np.all(sm>epsilon,0)
+        self._cost[:,mm] = (self._samples[:,1:,mm].sum(1)-2*self._samples[:,2,mm])/sm[:,np.all(sm>epsilon,0)]
         self._cost[:,mm] = np.tanh(self.bbr_slope*self._cost[:,mm]-self.bbr_offset)
         #compute partial derivatives
         self._cost[1:,mm] -= self._cost[0,mm]
         self._cost[1:,mm] /= epsilon
+        print np.abs(self._cost[1:,mm]).max()
         del sm
 
     def _update_subset(self, slab, transform, shape, force_recompute_subset=False):
