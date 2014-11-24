@@ -450,7 +450,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         if ndim_state>6:
             transition_matrix[:6,6:] = np.eye(6) # TODO: set speed
             # transition_covariance[:6,6:] = np.eye(6)
-        transition_covariance = transition_covariance[:ndim_state,:ndim_state]
+        self.transition_covariance = transition_covariance[:ndim_state,:ndim_state]
 
         initial_state_mean = np.hstack([last_reg.param.copy(), np.zeros(6)])
         initial_state_covariance = np.eye(ndim_state)*.01 # let say we are quite confident about init volume registration
@@ -459,7 +459,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
-        observation_variance = np.abs(self._cost[0])*self.iekf_observation_var+1
+        self.observation_variance = np.abs(self._cost[0])*self.iekf_observation_var+1
         ## deweights the high cost vertices
 #        observation_variance = (np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))
 #        observation_variance[np.isnan(observation_variance)]=0
@@ -486,7 +486,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             # forward prediction, in the 6 param case, identity
             pred_state = transition_matrix.dot(self.filtered_state_means[-1])
             estim_state = pred_state.copy()
-            pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
+            pred_covariance = self.filtered_state_covariances[-1] + self.transition_covariance
             state_covariance = pred_covariance.copy()
 
             convergence, niter = np.inf, 0
@@ -501,7 +501,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         self.sample_cost_jacobian(sl, sl_data, new_reg)
                     cost, jac = self._cost[0], self._cost[1:]
                     kalman_gain = pred_covariance.dot(jac[:,mm]).dot(
-                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])+np.diag(observation_variance[mm])))
+                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])+np.diag(self.observation_variance[mm])))
                     estim_state_old = estim_state.copy()
                     estim_state[:] = estim_state + kalman_gain.dot(cost[mm] - jac[:,mm].T.dot(pred_state-estim_state))
                     state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(pred_covariance)
@@ -609,13 +609,14 @@ class EPIOnlineRealign(EPIOnlineResample):
         mm[:] = self._slab_slice_mask>=0
         if np.count_nonzero(mm) < self.min_nsamples_per_slab:
             return
-       #sm = self._samples[:,:2,mm].sum(1)
-        sm = np.abs(np.squeeze(np.diff(self._samples[:,:2,mm],1,1)))
-        mm[mm] = np.all(sm>epsilon,0)
-        self._cost[:,mm] = (self._samples[:,1:,mm].sum(1)-2*self._samples[:,2,mm])/sm[:,np.all(sm>epsilon,0)]
+        #sm = self._samples[:,1:,mm].sum(1)
+        sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))
+        mm[mm] = np.all(sm>1e-3,0)
+        self._cost[:,mm] = (self._samples[:,1:,mm].sum(1)-2*self._samples[:,0,mm])/sm[:,np.all(sm>epsilon,0)]
         self._cost[:,mm] = np.tanh(self.bbr_slope*self._cost[:,mm]-self.bbr_offset)
         #compute partial derivatives
         self._cost[1:,mm] -= self._cost[0,mm]
+#        raise RuntimeError
         self._cost[1:,mm] /= epsilon
         print np.abs(self._cost[1:,mm]).max()
         del sm
