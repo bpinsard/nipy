@@ -286,15 +286,19 @@ class EPIOnlineRealign(EPIOnlineResample):
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
                  maxfun=MAXFUN,
+
                  nsamples_per_slab=1000,
-                 min_nsamples_per_slab=100,
+                 min_nsamples_per_slab=50,
+
                  bbr_shift=1.5,
                  bbr_slope=1,
                  bbr_offset=0,
 
-                 iekf_jacobian_epsilon=1e-4,
+                 iekf_jacobian_epsilon=1e-3,
                  iekf_convergence=1e-5,
-                 iekf_max_iter=8):
+                 iekf_max_iter=8,
+                 iekf_observation_var=1e1,
+                 iekf_transition_cov=1e-1):
 
         super(EPIOnlineRealign,self).__init__(
                  fieldmap,fieldmap_reg,
@@ -323,6 +327,8 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.iekf_jacobian_epsilon = iekf_jacobian_epsilon
         self.iekf_convergence = iekf_convergence
         self.iekf_max_iter = iekf_max_iter
+        self.iekf_observation_var = iekf_observation_var
+        self.iekf_transition_cov = iekf_transition_cov
 
         # compute fmap values on the surface used for realign
         if self.fmap != None:
@@ -440,7 +446,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         ndim_state = 6
         transition_matrix = np.eye(ndim_state)
         transition_covariance = np.diag([.01]*6+[.1]*6) # change in position should first occur by change in speed !?
-        transition_covariance = np.eye(6)*1e-2
+        transition_covariance = np.eye(6)*self.iekf_transition_cov
         if ndim_state>6:
             transition_matrix[:6,6:] = np.eye(6) # TODO: set speed
             # transition_covariance[:6,6:] = np.eye(6)
@@ -453,8 +459,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
-        observation_variance = np.ones(self._n_samples)*10
-        observation_variance = self._cost[0]*100
+        observation_variance = np.abs(self._cost[0])*self.iekf_observation_var+1
 
 #        observation_variance = (np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))
 #        observation_variance[np.isnan(observation_variance)]=0
@@ -496,8 +501,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                         self.sample_cost_jacobian(sl, sl_data, new_reg)
                     cost, jac = self._cost[0], self._cost[1:]
                     kalman_gain = pred_covariance.dot(jac[:,mm]).dot(
-                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])
-                                      +np.eye(np.count_nonzero(mm))*observation_variance[mm]))
+                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])+np.diag(observation_variance[mm])))
                     estim_state_old = estim_state.copy()
                     estim_state[:] = estim_state + kalman_gain.dot(cost[mm] - jac[:,mm].T.dot(pred_state-estim_state))
                     state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(pred_covariance)
@@ -595,6 +599,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                 del crds
 
         mm[:] = self._slab_slice_mask>=0
+        if np.count_nonzero(mm) < self.min_nsamples_per_slab:
+            return
        #sm = self._samples[:,:2,mm].sum(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[:,:2,mm],1,1)))
         mm[mm] = np.all(sm>0,0)
@@ -630,7 +636,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             for s in slab:
                 mm[:] = np.abs(self.slab_bnd_coords[0,..., self.slice_axis]-s)<.5
                 nsamp = np.count_nonzero(mm)
-                prop = self.nsamples_per_slab/len(slab)/float(nsamp+1)
+                prop = self.nsamples_per_slab/float(len(slab))/float(nsamp+1)
                 mm[mm] = np.random.random(nsamp) < prop
                 self._slab_slice_mask[mm] = s
             mm[:] = self._slab_slice_mask >= 0
