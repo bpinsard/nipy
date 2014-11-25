@@ -459,7 +459,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
-        self.observation_variance = np.abs(self._cost[0])*self.iekf_observation_var+1
+        self.observation_variance = (np.abs(self._cost[0])+1)*self.iekf_observation_var
         ## deweights the high cost vertices
 #        observation_variance = (np.diff(self._reg_samples,1,0)[0]/self._reg_samples.sum(0))
 #        observation_variance[np.isnan(observation_variance)]=0
@@ -563,7 +563,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         mm = self._samples_mask
         mm[:] = self._slab_slice_mask>=0
         
-        extent, resolution = 1,1000
+        extent, resolution = 1,10000
         epsilon = self.iekf_jacobian_epsilon
         
         self._update_subset(slab, transform, data.shape, force_recompute_subset=force_recompute_subset)
@@ -611,15 +611,15 @@ class EPIOnlineRealign(EPIOnlineResample):
             return
         #sm = self._samples[:,1:,mm].sum(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))
-        mm[mm] = np.all(sm>1e-3,0)
-        self._cost[:,mm] = (self._samples[:,1:,mm].sum(1)-2*self._samples[:,0,mm])/sm[:,np.all(sm>epsilon,0)]
+        excl = np.all(sm>1e-3,0)
+        mm[mm] = excl
+        self._cost[:,mm] = (self._samples[:,1:,mm].sum(1)-2*self._samples[:,0,mm])/sm[:,excl]
         self._cost[:,mm] = np.tanh(self.bbr_slope*self._cost[:,mm]-self.bbr_offset)
         #compute partial derivatives
         self._cost[1:,mm] -= self._cost[0,mm]
-#        raise RuntimeError
         self._cost[1:,mm] /= epsilon
         print np.abs(self._cost[1:,mm]).max()
-        del sm
+        del sm, excl
 
     def _update_subset(self, slab, transform, shape, force_recompute_subset=False):
         sa = self.slice_axis
@@ -712,12 +712,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         tt = transform.copy()
         costs = np.empty((len(transform.param),len(values)))
         for p in range(len(transform.param)):
-            self.sample_cost(slab, data,transform, sigma=sigma)
+            self.sample_cost(slab, data,transform)
             mmm=np.zeros(len(transform.param))
             mmm[p]=1
             for idx,delta in enumerate(values):
                 tt.param = transform.param+(mmm*delta)
-                costs[p,idx]  = self.sample_cost(slab, data, tt, sigma=sigma)
+                costs[p,idx]  = self.sample_cost(slab, data, tt)
         return costs                
 
 
