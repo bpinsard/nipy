@@ -85,6 +85,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
         elif regressors_type == 'voxelwise_outplane':
             voxelwise = np.dot(np.linalg.inv(nii.get_affine()),
                                 voxels_motion.transpose((0,2,1)))[slicing_axis]
+        del voxels_motion
         if voxelwise.ndim < 3:
             voxelwise = regressors[:,:,np.newaxis]
         regsh = voxelwise.shape
@@ -121,6 +122,7 @@ def regress_out_motion_parameters(nii,motion_in,mask,
     betamaps = np.empty(nii.shape[:-1]+(betas.shape[-1],), np.float)
     betamaps.fill(np.nan)
     betamaps[mask] = betas
+    del data 
     return cdata, regressors, betamaps
 
 
