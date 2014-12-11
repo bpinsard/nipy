@@ -629,6 +629,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         mm[:] = self._slab_slice_mask>=0
         if np.count_nonzero(mm) < self.min_nsamples_per_slab:
             return
+#        sm = self._samples[...,mm].mean(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))+1
         self._cost[:,mm] = np.tanh(self.bbr_slope*(
                 self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
@@ -645,7 +646,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         test_points = np.array([(x,y,z) for x in (0,shape[0]) for y in (0, shape[1]) for z in (0,self.nslices)])
         recompute_subset = np.abs(
             self._last_subsampling_transform.apply(test_points) -
-            transform.apply(test_points))[:,sa].max() > 0.05
+            transform.apply(test_points))[:,sa].max() > 0.01
         
         if recompute_subset or force_recompute_subset:
             self.apply_transform(
@@ -717,6 +718,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         return np.abs(self._cost[0,self._samples_mask]).mean()
 
     def _init_energy(self):
+#        sm = self._reg_samples.mean(0)+1
         sm = np.abs(np.diff(self._reg_samples[1:],1,0))[0]+1
         self._cost[0] = (self._reg_samples[1:].sum(0)-2*self._reg_samples[0])/sm
         self._cost[0] = np.tanh(self.bbr_slope*self._cost[0]-self.bbr_offset)
