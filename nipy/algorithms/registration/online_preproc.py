@@ -12,7 +12,7 @@ from .optimizer import configure_optimizer, use_derivatives
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
-from scipy.interpolate import LinearNDInterpolator, interpn
+from scipy.interpolate import LinearNDInterpolator, interpn, Rbf
 from .slice_motion import surface_to_samples, vertices_normals, compute_sigloss, intensity_factor
 
 
@@ -107,6 +107,43 @@ class EPIOnlineResample(object):
         lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
         print 'interpolate'
         out[:] = lndi(coords.reshape(-1,3)).reshape(out.shape)
+
+    def rbf_pve_scatter(self,data,out,slabs,transforms,coords,normals,pvmaps):
+        nslices = data[0].shape[2]*len(slabs)
+        vol = np.empty(data[0].shape[:2]+(nslices,))
+        points = np.empty(vol.shape+(3,))
+        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol.shape]],0,4)
+        phase_vec = np.zeros(3)
+        for sl, d in zip(slabs, data):
+            vol[...,sl] = d
+        for sl, t in zip(slabs, transforms):
+            points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
+            phase_vec+= t[:3,self.pe_dir]
+        phase_vec /= len(slabs)
+        epi_mask = slice(0, None)
+        if mask:
+            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, 0)>0
+            epi_mask[:] = binary_dilation(epi_mask, iterations=2)
+            points = points[epi_mask]
+        if not self.fmap is None:
+            self._precompute_sample_fmap(coords, vol.shape)
+            coords += self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
+
+#        # TODO: optimally should compute for each transform
+#        epi_pvf = self.inv_resample(pvmaps, t, frame_shape, -1, mask = ext_mask)
+
+        def pve_dist(x1,x2):
+            ## compute euclidian distance between two points
+            eucdist = np.sqrt(((x1-x2)**2).sum(0))
+            # the smaller the pve, the larger the distance is, so that voxel is not taken into account
+            pve = epi_pvf[0][(x1[0],x1[1],x1[2])] # suppose that the x1 is the voxel coordinates ???
+            eucdist /= pve
+            return eucdist
+
+        rbfi = Rbf(points[...,0].ravel(),points[...,1].ravel(),points[...,1].ravel(),vol[epi_mask].ravel())
+                   #,norm=pve_dist)
+        out[:] = rbfi(coords[:,0],coords[:,1],coords[:,2]).reshape(out.shape)
+        
 
     def _precompute_sample_fmap(self, coords, shape):
         if self.fmap is None:
