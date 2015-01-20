@@ -9,6 +9,7 @@ from ...core.image.image_spaces import (make_xyz_image,
 from .affine import Rigid, rotation_vec2mat
 
 from .optimizer import configure_optimizer, use_derivatives
+from scipy.optimize import fmin_slsqp
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
@@ -822,7 +823,8 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 smooth_white_wght = np.empty(data.shape[:2])
                 res = np.empty(data.shape[:2])
                 corr_fac = np.empty(data.shape[:2])
-            if not np.allclose(prev_reg, reg, 1e-4):
+            if not np.allclose(prev_reg, reg, 1e-6):
+                prev_reg = reg
                 print 'sample pvf and mask'
                 epi_pvf[:] = self.inv_resample(
                     pvmaps, reg, frame_shape, -1,
@@ -856,8 +858,12 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
                 tmp_res = np.empty(n_sl_samples)
+                betas = np.ones(regs.shape[1])
+                def fmin(betas):
+                    return ((cdata[sl_mask,sli]-betas.dot(regs.T))**2).sum()
                 while niter<maxiter:
-                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
+                    betas = fmin_slsqp(fmin,betas,bounds=[(1,np.inf)]*betas.size,disp=False)
+#                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                     tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
                     if np.count_nonzero(np.isnan(tmp_res))>0 or  np.count_nonzero(np.isinf(tmp_res))>0:
                         raise RuntimeError
