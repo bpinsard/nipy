@@ -863,6 +863,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     return ((cdata[sl_mask,sli]-betas.dot(regs.T))**2).sum()
                 while niter<maxiter:
                     betas = fmin_slsqp(fmin,betas,bounds=[(1,np.inf)]*betas.size,disp=False)
+                    betas[betas<0] = 1e-16
 #                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                     tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
                     if np.count_nonzero(np.isnan(tmp_res))>0 or  np.count_nonzero(np.isinf(tmp_res))>0:
