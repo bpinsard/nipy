@@ -813,6 +813,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
         
         cdata = None
         for fr, slab, reg, data in realigned:
+            print fr, slab
             if cdata is None: # init all
                 cdata = np.zeros(data.shape)
                 cdata2 = np.zeros(data.shape)
@@ -825,7 +826,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 corr_fac = np.empty(data.shape[:2])
             if not np.allclose(prev_reg, reg, 1e-6):
                 prev_reg = reg
-                print 'sample pvf and mask'
+                #print 'sample pvf and mask'
                 epi_pvf[:] = self.inv_resample(
                     pvmaps, reg, frame_shape, -1,
                     mask = ext_mask)
@@ -877,7 +878,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         break
                     corr_fac[:] = np.exp(-res)
                     corr_fac /= corr_fac[sl_mask].mean()
-                    cdata[...,sli] *= corr_fac
+                    #cdata[...,sli] *= corr_fac
                     print betas, res_std
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
