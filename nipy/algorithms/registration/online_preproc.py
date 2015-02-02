@@ -813,7 +813,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
         
         cdata = None
         for fr, slab, reg, data in realigned:
-            print fr, slab
             if cdata is None: # init all
                 cdata = np.zeros(data.shape)
                 cdata2 = np.zeros(data.shape)
@@ -879,11 +878,12 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     corr_fac[:] = np.exp(-res)
                     corr_fac /= corr_fac[sl_mask].mean()
                     #cdata[...,sli] *= corr_fac
-                    print betas, res_std
+#                    print betas, res_std
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
             yield fr, slab, reg, cdata2.copy()
+            print fr, slab, betas, res_std
         return
 
     def process(self, stack, *args, **kwargs):
