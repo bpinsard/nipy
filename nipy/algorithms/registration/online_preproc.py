@@ -859,6 +859,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
                 tmp_res = np.empty(n_sl_samples)
                 betas = np.ones(regs.shape[1])
+                reg_std = 0
                 def fmin(betas):
                     return ((cdata[sl_mask,sli]-betas.dot(regs.T))**2).sum()
                 while niter<maxiter:
