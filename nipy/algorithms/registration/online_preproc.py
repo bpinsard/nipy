@@ -836,7 +836,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
             cdata[:] = data
             cdata2.fill(0)
-            betas = np.ones(regs.shape[1])
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
                 sl_mask[data[...,sli]<=0] = False
@@ -859,6 +858,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
                 tmp_res = np.empty(n_sl_samples)
+                betas = np.ones(regs.shape[1])
                 def fmin(betas):
                     return ((cdata[sl_mask,sli]-betas.dot(regs.T))**2).sum()
                 while niter<maxiter:
@@ -882,8 +882,8 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
+                print fr, slab, betas, reg_std
             yield fr, slab, reg, cdata2.copy()
-            print fr, slab, betas, res_std
         return
 
     def process(self, stack, *args, **kwargs):
