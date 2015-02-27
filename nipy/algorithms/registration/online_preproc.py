@@ -846,7 +846,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 sl_mask[epi_pvf[...,sln,regs_subset][...,:-1].sum(-1)<=0] = False
 
                 n_sl_samples = np.count_nonzero(sl_mask)
-                if np.count_nonzero(sl_mask) < 30:
+                if n_sl_samples < 30:
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
                     continue
 
@@ -878,7 +878,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         break
                     corr_fac[:] = np.exp(-res)
                     corr_fac /= corr_fac[sl_mask].mean()
-                    #cdata[...,sli] *= corr_fac
+                    cdata[...,sli] *= corr_fac
 #                    print betas, res_std
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
