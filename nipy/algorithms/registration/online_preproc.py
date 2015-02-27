@@ -883,7 +883,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     niter+=1
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
-                print fr, slab, betas, res_std
+                print fr, slab, betas, res_std, niter
             yield fr, slab, reg, cdata2.copy()
         return
 
