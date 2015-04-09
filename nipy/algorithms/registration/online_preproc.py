@@ -800,7 +800,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
     def correct(self, realigned, pvmaps, frame_shape, sig_smth=12, white_idx=1,
-                maxiter = 32, residual_tol = 1e-3):
+                maxiter = 32, residual_tol = 2e-3, n_samples_min = 30):
         
         float_mask = nb.Nifti1Image(
             self.mask.get_data().astype(np.float32),
@@ -809,8 +809,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
         ext_mask = self.mask.get_data()>0
         ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0.1] = True
 
-        sig_smth = 12
-        
         cdata = None
         for fr, slab, reg, data in realigned:
             if cdata is None: # init all
@@ -822,7 +820,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 white_wght = np.empty(data.shape[:2])
                 smooth_white_wght = np.empty(data.shape[:2])
                 res = np.empty(data.shape[:2])
-                corr_fac = np.empty(data.shape[:2])
+                bias = np.empty(data.shape)
             if not np.allclose(prev_reg, reg, 1e-6):
                 prev_reg = reg
                 #print 'sample pvf and mask'
@@ -834,40 +832,42 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 # temporary fix, should fix the mask problem
                 #epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
                 #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
-            cdata[:] = data
+            cdata.fill(0)
             cdata2.fill(0)
+            bias.fill(1)
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
                 sl_mask[data[...,sli]<=0] = False
-
+                
                 niter = 0
                 res.fill(0)
                 regs_subset = epi_pvf[sl_mask,sln].sum(0) > 5
                 sl_mask[epi_pvf[...,sln,regs_subset][...,:-1].sum(-1)<=0] = False
 
                 n_sl_samples = np.count_nonzero(sl_mask)
-                if n_sl_samples < 30:
+                if n_sl_samples < n_samples_min:
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
+                    if n_sl_samples > 0:
+                        cdata2[sl_mask,sli] = cdata[sl_mask,sli] / cdata[sl_mask,sli].mean()
                     continue
-
+                
+#                regs_subset[0]=False
                 regs = epi_pvf[sl_mask,sln][...,regs_subset]
-                regs[:,-1] = 1
+                #regs[:,0] = 1
                 regs_pinv = np.linalg.pinv(regs)
                 data_mask_mean = data[sl_mask,sli].mean()
                 white_wght[:] = epi_pvf[..., sln, white_idx]*sl_mask
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
                 tmp_res = np.empty(n_sl_samples)
-                betas = np.ones(regs.shape[1])
-                res_std = 0
-                def fmin(betas):
-                    return ((cdata[sl_mask,sli]-betas.dot(regs.T))**2).sum()
+                
+                bias[...,sli].fill(1/data[sl_mask,sli].mean())
+                cdata[...,sli] = data[...,sli] * bias[...,sli]
                 while niter<maxiter:
-                    betas = fmin_slsqp(fmin,betas,bounds=[(1,np.inf)]*betas.size,disp=False)
+                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                     betas[betas<0] = 1e-16
-#                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                     tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
-                    if np.count_nonzero(np.isnan(tmp_res))>0 or  np.count_nonzero(np.isinf(tmp_res))>0:
+                    if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
                         raise RuntimeError
                     res.fill(0)
                     res[sl_mask] = tmp_res
@@ -876,15 +876,15 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     res_std = res[sl_mask].std()
                     if res_std < residual_tol:
                         break
-                    corr_fac[:] = np.exp(-res)
-                    corr_fac /= corr_fac[sl_mask].mean()
-                    cdata[...,sli] *= corr_fac
-#                    print betas, res_std
+                    bias[...,sli] *= np.exp(-res)
+                    cdata[...,sli] = data[...,sli] * bias[...,sli]
                     niter+=1
+                    print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
-                cdata2[sl_mask,sli] = cdata[sl_mask,sli] - betas.dot(regs.T)
-                print fr, slab, betas, res_std, niter
-            yield fr, slab, reg, cdata2.copy()
+                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(regs.T)
+                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
+#                bias = np.log(cdata/data)
+            yield fr, slab, reg, cdata2.copy()#, cdata.copy(),  bias
         return
 
     def process(self, stack, *args, **kwargs):
