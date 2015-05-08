@@ -833,7 +833,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 #epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
                 #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
             cdata.fill(0)
-            cdata2.fill(0)
+            cdata2.fill(1)
             bias.fill(1)
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
@@ -849,6 +849,8 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
                     if n_sl_samples > 0:
                         cdata2[sl_mask,sli] = cdata[sl_mask,sli] / cdata[sl_mask,sli].mean()
+                    else:
+                        cdata2[sl_mask,sli] = 1
                     continue
                 
 #                regs_subset[0]=False
