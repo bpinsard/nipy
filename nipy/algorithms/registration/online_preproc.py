@@ -103,6 +103,7 @@ class EPIOnlineResample(object):
             points = points[epi_mask]
         if not self.fmap is None:
             self._precompute_sample_fmap(coords, vol.shape)
+            coords = coords.copy()
             coords += self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
         print 'create interpolator'
         lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
