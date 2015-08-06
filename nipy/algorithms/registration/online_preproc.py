@@ -98,8 +98,8 @@ class EPIOnlineResample(object):
         phase_vec /= len(slabs)
         epi_mask = slice(0, None)
         if mask:
-            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, 0)>0
-            epi_mask[:] = binary_dilation(epi_mask, iterations=2)
+            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1)>0
+#            epi_mask[:] = binary_dilation(epi_mask, iterations=2)
             points = points[epi_mask]
         if not self.fmap is None:
             self._precompute_sample_fmap(coords, vol.shape)
