@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 from .linalg import (blas_dnrm2, blas_dasum, blas_ddot, blas_daxpy, blas_dscal,
@@ -10,6 +11,12 @@ from .array import (array_get, array_get_block, array_add, array_sub, array_mul,
 from .wrapper import (c_types, fff_type, npy_type, copy_vector, pass_matrix,
                       pass_vector, pass_array, pass_vector_via_iterator,
                       sum_via_iterators, copy_via_iterators)
+
+from warnings import warn
+
+warn('Module nipy.labs.bindings deprecated, will be removed',
+     FutureWarning,
+     stacklevel=2)
 
 from nipy.testing import Tester
 test = Tester().test

@@ -5,6 +5,9 @@
 Computation of parcellations using a hierarchical approach.
 Author: Bertrand Thirion, 2008
 """
+from __future__ import print_function, absolute_import
+
+from warnings import warn
 
 import numpy as np
 from numpy.random import rand
@@ -13,6 +16,12 @@ from nipy.algorithms.clustering.utils import kmeans, voronoi
 from .parcellation import MultiSubjectParcellation
 from nipy.algorithms.graph.field import Field
 from nipy.algorithms.graph.graph import wgraph_from_coo_matrix
+
+
+warn('Module nipy.labs.spatial_models.hierarchical_parcellation' + 
+     'deprecated, will be removed',
+     FutureWarning,
+     stacklevel=2)
 
 
 def _jointly_reduce_data(data1, data2, chunksize):
@@ -306,7 +315,7 @@ def _optim_hparcel(feature, domain, graphs, nb_parcel, lamb=1., dmax=10.,
 
             if verbose > 1:
                 jm = _field_gradient_jac(spatial_proto, target)
-                print jm.min(), jm.max(), np.sum(toto > 0)
+                print(jm.min(), jm.max(), np.sum(toto > 0))
 
             # c.subject-specific parcellation
             g = graphs[s]
@@ -331,7 +340,7 @@ def _optim_hparcel(feature, domain, graphs, nb_parcel, lamb=1., dmax=10.,
         proto_anat = np.mean(np.array(LPA), 0)
         displ = np.sqrt(np.sum((proto_mem - proto) ** 2, 1).max())
         if verbose:
-            print 'energy', Energy, 'displacement', displ
+            print('energy', Energy, 'displacement', displ)
 
         # recompute the topological model
         spatial_proto.set_field(proto_anat)
@@ -468,7 +477,7 @@ def perm_prfx(domain, graphs, features, nb_parcel, ldata, initial_mask=None,
                                  np.rollaxis(np.array(ldata), 1, 0))
         prfx = ttest(np.squeeze(pdata))
         if verbose:
-            print q, prfx.max(0)
+            print(q, prfx.max(0))
         prfx0.append(prfx.max(0))
 
     return prfx0

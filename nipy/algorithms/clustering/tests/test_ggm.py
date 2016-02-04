@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+from __future__ import print_function
+from __future__ import absolute_import
 
 import numpy as np
 import numpy.random as nr
@@ -17,7 +19,7 @@ def test_GGM1(verbose=0):
     b = np.absolute(G.mean+2.5)<0.5
     if verbose:
         #G.parameters()
-        print x.max()
+        print(x.max())
     assert(b)
 
 def test_GGM2(verbose=0):

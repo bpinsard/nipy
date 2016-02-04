@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 import numpy as np
@@ -152,7 +153,7 @@ class LikelihoodModelResults(object):
         """
 
         if column is None:
-            column = range(self.theta.shape[0])
+            column = list(range(self.theta.shape[0]))
 
         column = np.asarray(column)
         _theta = self.theta[column]
@@ -371,7 +372,7 @@ class LikelihoodModelResults(object):
                 upper.append(
                     self.theta[i] + inv_t_cdf(1 - alpha / 2, self.df_resid) *
                     np.sqrt(self.vcov(column=i, dispersion=dispersion)))
-        return np.asarray(zip(lower, upper))
+        return np.asarray(list(zip(lower, upper)))
 
 
 class TContrastResults(object):

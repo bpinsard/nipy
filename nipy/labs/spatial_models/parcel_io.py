@@ -5,16 +5,27 @@ Utility functions for mutli-subjectParcellation:
 this basically uses nipy io lib to perform IO opermation
 in parcel definition processes
 """
+from __future__ import print_function
+from __future__ import absolute_import
 
 import numpy as np
 import os.path
+from warnings import warn
 
 from nibabel import load, save, Nifti1Image
 
+from nipy.io.nibcompat import get_header, get_affine
 from nipy.algorithms.clustering.utils import kmeans
 from .discrete_domain import grid_domain_from_image
 from .mroi import SubDomains
 from ..mask import intersect_masks
+
+from nipy.externals.six import string_types
+
+warn('Module nipy.labs.spatial_models.parcel_io' + 
+     'deprecated, will be removed',
+     FutureWarning,
+     stacklevel=2)
 
 
 def mask_parcellation(mask_images, nb_parcel, threshold=0, output_image=None):
@@ -35,7 +46,7 @@ def mask_parcellation(mask_images, nb_parcel, threshold=0, output_image=None):
     -------
     wim: Nifti1Imagine instance,  representing the resulting parcellation
     """
-    if isinstance(mask_images, basestring):
+    if isinstance(mask_images, string_types):
         mask = mask_images
     elif isinstance(mask_images, Nifti1Image):
         mask = mask_images
@@ -43,7 +54,7 @@ def mask_parcellation(mask_images, nb_parcel, threshold=0, output_image=None):
         # mask_images should be a list
         mask_data = intersect_masks(mask_images, threshold=0) > 0
         mask = Nifti1Image(mask_data.astype('u8'),
-                           load(mask_images[0]).get_affine())
+                           get_affine(load(mask_images[0])))
 
     domain = grid_domain_from_image(mask)
     cent, labels, J = kmeans(domain.coord, nb_parcel)
@@ -81,7 +92,7 @@ def parcel_input(mask_images, learning_images, ths=.5, fdim=None):
     nb_subj = len(learning_images)
 
     # get a group-level mask
-    if isinstance(mask_images, basestring):
+    if isinstance(mask_images, string_types):
         mask = mask_images
     elif isinstance(mask_images, Nifti1Image):
         mask = mask_images
@@ -89,7 +100,7 @@ def parcel_input(mask_images, learning_images, ths=.5, fdim=None):
         # mask_images should be a list
         grp_mask = intersect_masks(mask_images, threshold=ths) > 0
         mask = Nifti1Image(grp_mask.astype('u8'),
-                           load(mask_images[0]).get_affine())
+                           get_affine(load(mask_images[0])))
 
     # build the domain
     domain = grid_domain_from_image(mask, nn=6)
@@ -139,11 +150,11 @@ def write_parcellation_images(Pa, template_path=None, indiv_path=None,
          output directory used to infer the paths when these are not available
     """
     # argument check
-    if swd == None:
+    if swd is None:
         from tempfile import mkdtemp
         swd = mkdtemp()
 
-    if subject_id == None:
+    if subject_id is None:
         subject_id = ['subj_%04d' % s for s in range(Pa.nb_subj)]
 
     if len(subject_id) != Pa.nb_subj:
@@ -222,7 +233,7 @@ def parcellation_based_analysis(Pa, test_images, test_id='one_sample',
     template = SubDomains(Pa.domain, Pa.template_labels)
     template.set_roi_feature('prfx', prfx)
     wim = template.to_image('prfx', roi=True)
-    hdr = wim.get_header()
+    hdr = get_header(wim)
     hdr['descrip'] = 'parcel-based random effects image (in t-variate)'
     if rfx_path is not None:
         save(wim, rfx_path)
@@ -324,7 +335,7 @@ def fixed_parcellation(mask_image, betas, nbparcel, nn=6, method='ward',
         size = lpa.get_size()
         vf = np.dot(var_beta, size) / size.sum()
         va = np.dot(var_coord, size) / size.sum()
-        print nbparcel, "functional variance", vf, "anatomical variance", va
+        print(nbparcel, "functional variance", vf, "anatomical variance", va)
 
     # step3:  write the resulting label image
     if fullpath is not None:
@@ -339,6 +350,6 @@ def fixed_parcellation(mask_image, betas, nbparcel, nn=6, method='ward',
             fid='id', roi=True, descrip='Intra-subject parcellation image')
         save(lpa_img, label_image)
         if verbose:
-            print "Wrote the parcellation images as %s" % label_image
+            print("Wrote the parcellation images as %s" % label_image)
 
     return lpa

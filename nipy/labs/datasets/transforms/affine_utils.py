@@ -2,6 +2,7 @@
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """Functions working with affine transformation matrices.
 """
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -124,6 +125,6 @@ def get_bounds(shape, affine):
                      [0,    bdim, cdim, 1],
                      [adim, bdim, cdim, 1] ]).T
     box = np.dot(affine, box)[:3]
-    return zip(box.min(axis=-1), box.max(axis=-1))
+    return list(zip(box.min(axis=-1), box.max(axis=-1)))
 
 

@@ -9,6 +9,7 @@ labeled [1..V] and [1..W] respectively.
 
 Author: Bertrand Thirion, 2006--2011
 """
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -181,7 +182,7 @@ class BipartiteGraph(object):
         self.V = V
         self.W = W
         self.E = 0
-        if (edges == None) & (weights == None):
+        if (edges is None) & (weights is None):
             self.edges = np.array([], np.int)
             self.weights = np.array([])
         else:

@@ -4,6 +4,7 @@
 Conversion mechansims for IO and interaction between volumetric datasets 
 and other type of neuroimaging data.
 """
+from __future__ import absolute_import
 import os
 
 import numpy as np
@@ -11,7 +12,10 @@ import numpy as np
 import nibabel as nib
 from nibabel.spatialimages import SpatialImage
 
+from nipy.io.nibcompat import get_header, get_affine
 from .volumes.volume_img import VolumeImg
+
+from nipy.externals.six import string_types
 
 def as_volume_img(obj, copy=True, squeeze=True, world_space=None):
     """ Convert the input to a VolumeImg.
@@ -53,16 +57,16 @@ def as_volume_img(obj, copy=True, squeeze=True, world_space=None):
             obj = obj.__copy__()
         return obj
 
-    elif isinstance(obj, basestring):
+    elif isinstance(obj, string_types):
         if not os.path.exists(obj):
             raise ValueError("The file '%s' cannot be found" % obj)
         obj = nib.load(obj)
         copy = False
-    
+
     if isinstance(obj, SpatialImage):
         data   = obj.get_data()
-        affine = obj.get_affine()
-        header = dict(obj.get_header())
+        affine = get_affine(obj)
+        header = dict(get_header(obj))
         fname = obj.file_map['image'].filename
         if fname:
             header['filename'] = fname
@@ -102,11 +106,11 @@ def save(filename, obj):
     """
     obj = as_volume_img(obj, copy=False)
     hdr = nib.Nifti1Header()
-    for key, value in obj.metadata.iteritems():
+    for key, value in obj.metadata.items():
         if key in hdr:
             hdr[key] = value
-    img = nib.Nifti1Image(obj.get_data(), 
-                                   obj.affine,
-                                   header=hdr)
+    img = nib.Nifti1Image(obj.get_data(),
+                          obj.affine,
+                          header=hdr)
     nib.save(img, filename)
 

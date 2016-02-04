@@ -5,6 +5,7 @@ this module contains a function to perform fast distance computation on arrays
 
 Author : Bertrand Thirion, 2008-2011
 """
+from __future__ import absolute_import
 import numpy as np
 
 
@@ -23,7 +24,7 @@ def euclidean_distance(X, Y=None):
     -------
     ED, array fo shape(n1, n2) with all the pairwise distance
     """
-    if Y == None:
+    if Y is None:
         Y = X
     if X.shape[1] != Y.shape[1]:
         raise ValueError("incompatible dimension for X and Y matrices")

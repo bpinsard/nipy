@@ -1,43 +1,96 @@
 # vim ft=yaml
-# travis-ci.org definition for nipy build
-#
-# We pretend to be erlang because we need can't use the python support in
-# travis-ci; it uses virtualenvs, they do not have numpy, scipy, matplotlib,
-# and it is impractical to build them
-language: erlang
+# Multiple lines can be made a single "virtual line" because of the way that
+# Travis munges each line before executing it to print out the exit status.
+# It's okay for it to be on multiple physical lines, so long as you remember:
+# - There can't be any leading "-"s - All newlines will be removed, so use
+# ";"s
+sudo: false  # To use travis container infrastructure
+addons:
+  apt:
+    packages:
+        - libblas-dev
+        - liblapack-dev
+language: python
+cache:
+  directories:
+    - $HOME/.cache/pip
 env:
-    # Enable python 2 and python 3 builds. Python3.2 available in Ubuntu 12.04.
-    - PYTHON=python EASY_INSTALL=easy_install PIP=pip COVERAGE=--with-coverage
-    - PYTHON=python3 EASY_INSTALL=easy_install3 PIP=pip-3.2
+    global:
+        - DEPENDS="numpy scipy sympy matplotlib nibabel"
+        - INSTALL_TYPE="setup"
+python:
+    - 2.6
+    - 3.2
+    - 3.3
+    - 3.4
+    - 3.5
+
+matrix:
+  include:
+    - python: 2.7
+      env:
+        - COVERAGE=1
+    # Absolute minimum dependencies
+    - python: 2.7
+      env:
+        # Definitive source for these in nipy/info.py
+        - DEPENDS="numpy==1.6.0 scipy==0.9.0 sympy==0.7.0 nibabel==1.2.0"
+    # Test compiling against external lapack
+    - python: 3.4
+      env:
+        - NIPY_EXTERNAL_LAPACK=1
+    - python: 2.7
+      env:
+        - INSTALL_TYPE=sdist
+        - DEPENDS="numpy==1.7.1"  # latest travis scipy built with 1.7.1
+    - python: 2.7
+      env:
+        - INSTALL_TYPE=wheel
+        - DEPENDS="numpy==1.7.1"  # latest travis scipy built with 1.7.1
+    - python: 2.7
+      env:
+        - INSTALL_TYPE=requirements
+        - DEPENDS=
+
+before_install:
+    - source tools/travis_tools.sh
+    - virtualenv --python=python venv
+    - source venv/bin/activate
+    - python --version # just to check
+    - pip install -U pip
+    - retry pip install nose # always
+    - wheelhouse_pip_install $DEPENDS
+    - if [ "${COVERAGE}" == "1" ]; then
+      pip install coverage;
+      pip install coveralls;
+      fi
+# command to install dependencies
+# e.g. pip install -r requirements.txt # --use-mirrors
 install:
-    - sudo apt-get update
-    - sudo apt-get install $PYTHON-dev
-    - sudo apt-get install $PYTHON-numpy
-    - sudo apt-get install $PYTHON-scipy
-    - sudo apt-get install $PYTHON-setuptools
-    - sudo apt-get install $PYTHON-nose
-    # Installing sympy for python3 needs pip
-    # The following is an extended virtual line; will be made into one line by
-    # Travis processing.  Avoid `-` at the beginning of the line, remember to
-    # add `;` at the end of continuation lines.
-    - if [ "${PYTHON}" == "python3" ]; then
-        sudo $EASY_INSTALL pip;
-        sudo $PIP install sympy;
-      else
-        sudo apt-get install python-pip python-sympy ;
+    - |
+      if [ "$INSTALL_TYPE" == "setup" ]; then
+          python setup.py install
+      elif [ "$INSTALL_TYPE" == "sdist" ]; then
+        python setup_egg.py egg_info  # check egg_info while we're here
+        python setup_egg.py sdist
+        wheelhouse_pip_install dist/*.tar.gz
+      elif [ "$INSTALL_TYPE" == "wheel" ]; then
+        pip install wheel
+        python setup_egg.py bdist_wheel
+        wheelhouse_pip_install dist/*.whl
+      elif [ "$INSTALL_TYPE" == "requirements" ]; then
+        wheelhouse_pip_install -r requirements.txt
+        python setup.py install
       fi
-    - sudo $PIP install nibabel # Latest pypi
-    - $PYTHON setup.py build
-    - sudo $PYTHON setup.py install
-    - if [ "${COVERAGE}" == "--with-coverage" ]; then
-      sudo $PIP install coverage;
-      sudo $PIP install coveralls;
-      fi
+# command to run tests, e.g. python setup.py test
 script:
     # Change into an innocuous directory and find tests from installation
-    - mkdir for_test
-    - cd for_test
-    - if [ "${COVERAGE}" == "--with-coverage" ]; then cp ../.coveragerc .; fi
-    - $PYTHON ../tools/nipnost $COVERAGE `$PYTHON -c "import os; import nipy; print(os.path.dirname(nipy.__file__))"`
+    - mkdir for_testing
+    - cd for_testing
+    - if [ "${COVERAGE}" == "1" ]; then
+      cp ../.coveragerc .;
+      COVER_ARGS="--with-coverage --cover-package nipy";
+      fi
+    - $PYTHON ../tools/nipnost --verbosity=3 $COVER_ARGS nipy
 after_success:
-    - if [ "${COVERAGE}" == "--with-coverage" ]; then coveralls; fi
+    - if [ "${COVERAGE}" == "1" ]; then coveralls; fi

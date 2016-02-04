@@ -29,6 +29,8 @@ Example of fixed effects statistics across two contrasts
 >>> np.random.shuffle(cval_)
 >>> z_ffx = (model.contrast(cval) + model.contrast(cval_)).z_score()
 """
+from __future__ import print_function
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -38,20 +40,19 @@ import scipy.stats as sps
 
 from nibabel import load, Nifti1Image
 
+from nipy.io.nibcompat import get_header, get_affine
 from nipy.labs.mask import compute_mask_sessions
 from nipy.algorithms.statistics.models.regression import OLSModel, ARModel
 from nipy.algorithms.statistics.utils import multiple_mahalanobis, z_score
-from nipy.core.api import is_image
 
-from nipy.testing.decorators import skip_doctest_if
-from nipy.utils import HAVE_EXAMPLE_DATA
+from nipy.externals.six import string_types
 
 DEF_TINY = 1e-50
 DEF_DOFMAX = 1e10
 
 
 def data_scaling(Y):
-    """Scaling of the data to have pourcent of baseline change columnwise
+    """Scaling of the data to have percent of baseline change columnwise
 
     Parameters
     ----------
@@ -97,7 +98,7 @@ class GeneralLinearModel(object):
         self.labels_ = None
         self.results_ = None
 
-    def fit(self, Y, model='ar1', steps=100):
+    def fit(self, Y, model='ols', steps=100):
         """GLM fitting of a dataset using 'ols' regression or the two-pass
 
         Parameters
@@ -105,7 +106,7 @@ class GeneralLinearModel(object):
         Y : array of shape(n_time_points, n_samples)
             the fMRI data
         model : {'ar1', 'ols'}, optional
-            the temporal variance model. Defaults to 'ar1'
+            the temporal variance model. Defaults to 'ols'
         steps : int, optional
             Maximum number of discrete steps for the AR(1) coef histogram
         """
@@ -139,7 +140,7 @@ class GeneralLinearModel(object):
             self.results_ = {0.0: ols_result}
 
     def get_beta(self, column_index=None):
-        """Acessor for the best linear unbiased estimated of model parameters
+        """Accessor for the best linear unbiased estimated of model parameters
 
         Parameters
         ----------
@@ -153,7 +154,7 @@ class GeneralLinearModel(object):
             the beta
         """
         # make colum_index a list if it an int
-        if column_index == None:
+        if column_index is None:
             column_index = np.arange(self.X.shape[1])
         if not hasattr(column_index, '__iter__'):
             column_index = [int(column_index)]
@@ -166,7 +167,7 @@ class GeneralLinearModel(object):
         return beta
 
     def get_mse(self):
-        """Acessor for the mean squared error of the model
+        """Accessor for the mean squared error of the model
 
         Returns
         -------
@@ -180,7 +181,7 @@ class GeneralLinearModel(object):
         return mse
 
     def get_logL(self):
-        """Acessor for the log-likelihood of the model
+        """Accessor for the log-likelihood of the model
 
         Returns
         -------
@@ -208,7 +209,7 @@ class GeneralLinearModel(object):
         -------
         con: Contrast instance
         """
-        if self.labels_ == None or self.results_ == None:
+        if self.labels_ is None or self.results_ is None:
             raise ValueError('The model has not been estimated yet')
         con_val = np.asarray(con_val)
         if con_val.ndim == 1:
@@ -286,7 +287,7 @@ class Contrast(object):
         self.dof = float(dof)
         self.dim = effect.shape[0]
         if self.dim > 1 and contrast_type is 't':
-            print 'Automatically converted multi-dimensional t to F contrast'
+            print('Automatically converted multi-dimensional t to F contrast')
             contrast_type = 'F'
         self.contrast_type = contrast_type
         self.stat_ = None
@@ -344,8 +345,12 @@ class Contrast(object):
         ==========
         baseline: float, optional,
         Baseline value for the test statistic
+
+        Note
+        ====
+        the value of 0.5 is used where the stat is not defined
         """
-        if self.stat_ == None or not self.baseline == baseline:
+        if self.stat_ is None or not self.baseline == baseline:
             self.stat_ = self.stat(baseline)
         # Valid conjunction as in Nichols et al, Neuroimage 25, 2005.
         if self.contrast_type in ['t', 'tmin-conjunction']:
@@ -355,6 +360,8 @@ class Contrast(object):
                     self.dof, self.dofmax))
         else:
             raise ValueError('Unknown statistic type')
+
+        p[np.isnan(self.stat_)] = .5
         self.p_value_ = p
         return p
 
@@ -366,12 +373,17 @@ class Contrast(object):
         ==========
         baseline: float, optional,
                   Baseline value for the test statistic
+
+        Note
+        ====
+        the value of 0 is used where the stat is not defined
         """
-        if self.p_value_ == None or not self.baseline == baseline:
+        if self.p_value_ is None or not self.baseline == baseline:
             self.p_value_ = self.p_value(baseline)
 
         # Avoid inf values kindly supplied by scipy.
         self.z_score_ = z_score(self.p_value_)
+        self.z_score_[np.isnan(self.stat_)] =  0
         return self.z_score_
 
     def __add__(self, other):
@@ -409,7 +421,6 @@ class FMRILinearModel(object):
     i.e. by taking images as input and output
     """
 
-    @skip_doctest_if(not HAVE_EXAMPLE_DATA)
     def __init__(self, fmri_data, design_matrices, mask='compute',
                  m=0.2, M=0.9, threshold=.5):
         """Load the data
@@ -434,28 +445,28 @@ class FMRILinearModel(object):
 
         Examples
         --------
-        We need the example data package for this example
+        We need the example data package for this example::
 
-        >>> from nipy.utils import example_data
-        >>> from nipy.modalities.fmri.glm import FMRILinearModel
-        >>> fmri_files = [example_data.get_filename('fiac', 'fiac0', run)
-        ...     for run in ['run1.nii.gz', 'run2.nii.gz']]
-        >>> design_files = [example_data.get_filename('fiac', 'fiac0', run)
-        ...     for run in ['run1_design.npz', 'run2_design.npz']]
-        >>> mask = example_data.get_filename('fiac', 'fiac0', 'mask.nii.gz')
-        >>> multi_session_model = FMRILinearModel(fmri_files, design_files, mask)
-        >>> multi_session_model.fit()
-        >>> z_image, = multi_session_model.contrast([np.eye(13)[1]] * 2)
+            from nipy.utils import example_data
+            from nipy.modalities.fmri.glm import FMRILinearModel
+            fmri_files = [example_data.get_filename('fiac', 'fiac0', run)
+                for run in ['run1.nii.gz', 'run2.nii.gz']]
+            design_files = [example_data.get_filename('fiac', 'fiac0', run)
+                for run in ['run1_design.npz', 'run2_design.npz']]
+            mask = example_data.get_filename('fiac', 'fiac0', 'mask.nii.gz')
+            multi_session_model = FMRILinearModel(fmri_files,
+                                                  design_files,
+                                                  mask)
+            multi_session_model.fit()
+            z_image, = multi_session_model.contrast([np.eye(13)[1]] * 2)
 
-        The number of voxels with p < 0.001
-
-        >>> np.sum(z_image.get_data() > 3.09)
-        671
+            # The number of voxels with p < 0.001 given by ...
+            print(np.sum(z_image.get_data() > 3.09))
         """
         # manipulate the arguments
-        if isinstance(fmri_data, basestring) or hasattr(fmri_data, 'get_data'):
+        if isinstance(fmri_data, string_types) or hasattr(fmri_data, 'get_data'):
             fmri_data = [fmri_data]
-        if isinstance(design_matrices, (basestring, np.ndarray)):
+        if isinstance(design_matrices, (string_types, np.ndarray)):
             design_matrices = [design_matrices]
         if len(fmri_data) != len(design_matrices):
             raise ValueError('Incompatible number of fmri runs and '
@@ -465,16 +476,16 @@ class FMRILinearModel(object):
 
         # load the fmri data
         for fmri_run in fmri_data:
-            if isinstance(fmri_run, basestring):
+            if isinstance(fmri_run, string_types):
                 self.fmri_data.append(load(fmri_run))
             else:
                 self.fmri_data.append(fmri_run)
         # set self.affine as the affine of the first image
-        self.affine = self.fmri_data[0].get_affine()
+        self.affine = get_affine(self.fmri_data[0])
 
         # load the designs
         for design_matrix in design_matrices:
-            if isinstance(design_matrix, basestring):
+            if isinstance(design_matrix, string_types):
                 loaded = np.load(design_matrix)
                 self.design_matrices.append(loaded[loaded.files[0]])
             else:
@@ -485,11 +496,11 @@ class FMRILinearModel(object):
             mask = compute_mask_sessions(
                 fmri_data, m=m, M=M, cc=1, threshold=threshold, opening=0)
             self.mask = Nifti1Image(mask.astype(np.int8), self.affine)
-        elif mask == None:
+        elif mask is None:
             mask = np.ones(self.fmri_data[0].shape[:3]).astype(np.int8)
             self.mask = Nifti1Image(mask, self.affine)
         else:
-            if isinstance(mask, basestring):
+            if isinstance(mask, string_types):
                 self.mask = load(mask)
             else:
                 self.mask = mask
@@ -500,7 +511,7 @@ class FMRILinearModel(object):
         Parameters
         ----------
         do_scaling : bool, optional
-            if True, the data should be scaled as pourcent of voxel mean
+            if True, the data should be scaled as percent of voxel mean
         model : string, optional,
             the kind of glm ('ols' or 'ar1') you want to fit to the data
         steps : int, optional
@@ -552,7 +563,8 @@ class FMRILinearModel(object):
         Returns
         -------
         output_images : list of nibabel images
-            The desired output images
+            The required output images, in the following order:
+            z image, stat(t/F) image, effects image, variance image
         """
         if self.glms == []:
             raise ValueError('first run fit() to estimate the model')
@@ -582,7 +594,7 @@ class FMRILinearModel(object):
         descrips = ['z statistic', 'Statistical value', 'Estimated effect',
                     'Estimated variance']
         dims = [1, 1, contrast_.dim, contrast_.dim ** 2]
-        n_vox = contrast_.z_score_.size
+        n_vox = mask.sum()
         output_images = []
         for (do_output, estimate, descrip, dim) in zip(
             do_outputs, estimates, descrips, dims):
@@ -597,7 +609,7 @@ class FMRILinearModel(object):
                     result_map[mask] = np.squeeze(
                         getattr(contrast_, estimate))
                 output = Nifti1Image(result_map, self.affine)
-                output.get_header()['descrip'] = (
+                get_header(output)['descrip'] = (
                     '%s associated with contrast %s' % (descrip, con_id))
                 output_images.append(output)
         return output_images

@@ -1,5 +1,6 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -109,7 +110,7 @@ def test_parcel_feature_multi_subj():
     assert msp.get_feature('data').shape == (nb_parcel, nb_subj, dim)
 
     # msp.features['data'] has been overriden
-    assert msp.features.keys() == ['data']
+    assert list(msp.features.keys()) == ['data']
 
 
 def test_parcel_hierarchical():

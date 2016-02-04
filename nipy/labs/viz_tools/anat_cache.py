@@ -2,8 +2,8 @@
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
 3D visualization of activation maps using Mayavi
-
 """
+from __future__ import absolute_import
 
 # Author: Gael Varoquaux <gael dot varoquaux at normalesup dot org>
 # License: BSD
@@ -17,6 +17,8 @@ import numpy as np
 from scipy import ndimage
 
 from nibabel import load
+
+from nipy.io.nibcompat import get_affine
 
 # The sform for MNI templates
 mni_sform = np.array([[-1, 0, 0,   90],
@@ -78,7 +80,7 @@ class _AnatCache(object):
             anat = anat.astype(np.float)
             anat_mask = ndimage.morphology.binary_fill_holes(anat > 0)
             anat = np.ma.masked_array(anat, np.logical_not(anat_mask))
-            cls.anat_sform = anat_im.get_affine()
+            cls.anat_sform = get_affine(anat_im)
             cls.anat = anat
             cls.anat_max = anat.max()
         return cls.anat, cls.anat_sform, cls.anat_max

@@ -19,12 +19,15 @@ represents the number of wanted clusters)
 
 Author : Bertrand Thirion,Pamela Guevara, 2006-2009
 """
+from __future__ import print_function
+from __future__ import absolute_import
 
 #---------------------------------------------------------------------------
 # ------ Routines for Agglomerative Hierarchical Clustering ----------------
 # --------------------------------------------------------------------------
 
 import numpy as np
+from warnings import warn
 
 from ..graph.graph import WeightedGraph
 from ..graph.forest import Forest
@@ -71,7 +74,7 @@ class WeightedForest(Forest):
         self.V = int(V)
 
         # define the parents
-        if parents == None:
+        if parents is None:
             self.parents = np.arange(self.V)
         else:
             if np.size(parents) != V:
@@ -86,7 +89,7 @@ class WeightedForest(Forest):
             raise ValueError('The proposed structure is not a forest')
         self.children = []
 
-        if height == None:
+        if height is None:
             height = np.zeros(self.V)
         else:
             if np.size(height) != V:
@@ -96,7 +99,7 @@ class WeightedForest(Forest):
     def set_height(self, height=None):
         """Set the height array
         """
-        if height == None:
+        if height is None:
             height = np.zeros(self.V)
 
         if np.size(height) != self.V:
@@ -154,7 +157,7 @@ class WeightedForest(Forest):
             idx[i] = np.mean(idx[j])
 
         # 3. plot
-        if ax == None:
+        if ax is None:
             mp.figure()
             ax = mp.subplot(1, 1, 1)
 
@@ -317,7 +320,9 @@ def average_link_graph(G):
     potential (-np.inf).
     This problem is handled transparently inthe associated segment functionp.
     """
-
+    warn('Function average_link_graph deprecated, will be removed',
+         FutureWarning,
+         stacklevel=2)
     # prepare a graph with twice the number of vertices
     n = G.V
     nbcc = G.cc().max() + 1
@@ -380,6 +385,10 @@ def average_link_graph_segment(G, stop=0, qmax=1, verbose=False):
     cost: array of shape (G.V (?))
           the cost of each merge step during the clustering procedure
     """
+    warn('Function average_link_graph_segment deprecated, will be removed',
+         FutureWarning,
+         stacklevel=2)
+
     # prepare a graph with twice the number of vertices
     n = G.V
     if qmax == - 1:
@@ -420,11 +429,11 @@ def _inertia_(i, j, Features):
     the concatenation of Feature[i] and Features[j]
     """
     if np.size(np.shape(Features[i])) < 2:
-        print i, np.shape(Features[i]), Features[i]
+        print(i, np.shape(Features[i]), Features[i])
     if np.size(np.shape(Features[i])) < 2:
-        print j, np.shape(Features[j]), Features[j]
+        print(j, np.shape(Features[j]), Features[j])
     if np.shape(Features[i])[1] != np.shape(Features[j])[1]:
-        print i, j, np.shape(Features[i]), np.shape(Features[j])
+        print(i, j, np.shape(Features[i]), np.shape(Features[j]))
     localset = np.vstack((Features[i], Features[j]))
     return np.var(localset, 0).sum()
 
@@ -447,7 +456,7 @@ def _initial_inertia(K, Features, seeds=None):
     if seeds if provided (seeds!=None)
     this is done only for vertices adjacent to the seeds
     """
-    if seeds == None:
+    if seeds is None:
         for e in range(K.E):
             i = K.edges[e, 0]
             j = K.edges[e, 1]
@@ -622,6 +631,12 @@ def ward_quick(G, feature, verbose=False):
 
     Caveat : only approximate
     """
+    warn('Function ward_quick from ' + 
+         'nipy.algorithms.clustering.hierrachical_clustering ' + 
+         'deprecated, will be removed',
+         FutureWarning,
+         stacklevel=2)
+
     # basic check
     if feature.ndim == 1:
         feature = np.reshape(feature, (-1, 1))
@@ -670,7 +685,7 @@ def ward_quick(G, feature, verbose=False):
             j = K.edges[m, 1]
             height[k] = cost
             if verbose:
-                print q, i, j, m, cost
+                print(q, i, j, m, cost)
 
             # 2. remove the current edge
             K.edges[m] = -1
@@ -890,6 +905,12 @@ def ward(G, feature, verbose=False):
     When G has more than 1 connected component, t is no longer a tree.  This
     case is handled cleanly now
     """
+    warn('Function ward from ' + 
+         'nipy.algorithms.clustering.hierrachical_clustering ' + 
+         'deprecated, will be removed',
+         FutureWarning,
+         stacklevel=2)
+
     # basic check
     if feature.ndim == 1:
         feature = np.reshape(feature, (-1, 1))
@@ -926,7 +947,7 @@ def ward(G, feature, verbose=False):
         j = K.edges[m, 1]
         height[k] = cost
         if verbose:
-            print q, i, j, m, cost
+            print(q, i, j, m, cost)
 
         # 2. remove the current edge
         K.edges[m] = - 1

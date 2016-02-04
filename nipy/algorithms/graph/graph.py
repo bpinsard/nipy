@@ -20,7 +20,10 @@ instantiate WeightedGraphs from data:
 
 Author: Bertrand Thirion, 2006--2011
 """
+from __future__ import absolute_import
+
 import numpy as np
+
 from scipy.sparse import coo_matrix
 
 class Graph(object):
@@ -218,7 +221,7 @@ class Graph(object):
         """
         import matplotlib.pylab as plt
 
-        if ax == None:
+        if ax is None:
             plt.figure()
             ax = plt.subplot(1, 1, 1)
 
@@ -680,7 +683,7 @@ x
         dist, active = np.inf * np.ones(self.V), np.ones(self.V)
         idx, neighb, weight = self.compact_neighb()
         dist[seed] = 0
-        dg = zip(np.zeros_like(seed), seed)
+        dg = list(zip(np.zeros_like(seed), seed))
         heapq.heapify(dg)
         for j in range(self.V):
             end = False
@@ -742,11 +745,11 @@ x
         proceeds by repeating Dijkstra's algo for each seed. Floyd's algo is not
         used (O(self.V)^3 complexity...)
         """
-        if seed == None:
+        if seed is None:
             seed = np.arange(self.V)
         dg = None
         for s in seed:
-            if dg == None:
+            if dg is None:
                 dg = self.dijkstra(s)
             else:
                 dg = np.vstack((dg, self.dijkstra(s)))
@@ -897,7 +900,7 @@ x
         idx, neighb, weight = self.compact_neighb()
         dist[seed] = 0
         label[seed] = np.arange(len(seed))
-        dg = zip(np.zeros_like(seed), seed)
+        dg = list(zip(np.zeros_like(seed), seed))
         heapq.heapify(dg)
         for j in range(self.V):
             end = False
@@ -1069,7 +1072,7 @@ x
         By default, the weights are a Gaussian function of the distance The
         implementation is not optimal
         """
-        from bipartite_graph import cross_knn
+        from .bipartite_graph import cross_knn
         # checks
         if seeds.shape[0] != self.V:
             raise ValueError("The numberof seeds is not as expected")
@@ -1121,12 +1124,12 @@ x
 
         wm = self.weights.max()
         import matplotlib.pylab as mp
-        if ax == None:
+        if ax is None:
             mp.figure()
             ax = mp.subplot(1, 1, 1)
 
         ml = 5.
-        if (X == None):
+        if (X is None):
             for e in range(self.E):
                 A = (self.edges[e, 0] * 2 * np.pi) / self.V
                 B = (self.edges[e, 1] * 2 * np.pi) / self.V

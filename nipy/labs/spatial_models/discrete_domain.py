@@ -6,13 +6,17 @@ This is meant to provide a unified API to deal with n-d imaged and meshes.
 
 Author: Bertrand Thirion, 2010
 """
+from __future__ import absolute_import
 import numpy as np
 import scipy.sparse as sp
 
 from nibabel import load, Nifti1Image, save
 
-from nipy.algorithms.graph import WeightedGraph, wgraph_from_coo_matrix, \
-    wgraph_from_3d_grid
+from nipy.io.nibcompat import get_header, get_affine
+from nipy.algorithms.graph import (WeightedGraph, wgraph_from_coo_matrix,
+                                   wgraph_from_3d_grid)
+
+from nipy.externals.six import string_types
 
 ##############################################################
 # Ancillary functions
@@ -232,11 +236,11 @@ def domain_from_image(mim, nn=18):
     The corresponding StructuredDomain instance
 
     """
-    if isinstance(mim, basestring):
+    if isinstance(mim, string_types):
         iim = load(mim)
     else:
         iim = mim
-    return domain_from_binary_array(iim.get_data(), iim.get_affine(), nn)
+    return domain_from_binary_array(iim.get_data(), get_affine(iim), nn)
 
 
 def grid_domain_from_binary_array(mask, affine=None, nn=0):
@@ -282,11 +286,11 @@ def grid_domain_from_image(mim, nn=18):
     The corresponding NDGridDomain instance
 
     """
-    if isinstance(mim, basestring):
+    if isinstance(mim, string_types):
         iim = load(mim)
     else:
         iim = mim
-    return grid_domain_from_binary_array(iim.get_data(), iim.get_affine(), nn)
+    return grid_domain_from_binary_array(iim.get_data(), get_affine(iim), nn)
 
 
 def grid_domain_from_shape(shape, affine=None):
@@ -407,7 +411,7 @@ def domain_from_mesh(mesh):
     mesh: nibabel gifti mesh instance, or path to such a mesh
 
     """
-    if isinstance(mesh, basestring):
+    if isinstance(mesh, string_types):
         from nibabel.gifti import read
         mesh_ = read(mesh)
     else:
@@ -499,7 +503,7 @@ class DiscreteDomain(object):
         new_dom = DiscreteDomain(self.dim, self.coord.copy(),
                                   self.local_volume.copy(), self.id,
                                   self.referential)
-        for fid in self.features.keys():
+        for fid in list(self.features.keys()):
             new_dom.set_feature(fid, self.get_feature(fid).copy())
         return new_dom
 
@@ -531,7 +535,7 @@ class DiscreteDomain(object):
         scoord = self.coord[bmask]
         DD = DiscreteDomain(self.dim, scoord, svol, id, self.referential)
 
-        for fid in self.features.keys():
+        for fid in list(self.features.keys()):
             f = self.features.pop(fid)
             DD.set_feature(fid, f[bmask])
         return DD
@@ -594,7 +598,7 @@ class DiscreteDomain(object):
                the result
 
         """
-        if fid == None:
+        if fid is None:
             return np.sum(self.local_volume)
         ffid = self.features[fid]
         if np.size(ffid) == ffid.shape[0]:
@@ -646,7 +650,7 @@ class StructuredDomain(DiscreteDomain):
         dd = StructuredDomain(self.dim, td.coord, td.local_volume,
                             stopo, did, self.referential)
 
-        for fid in td.features.keys():
+        for fid in list(td.features.keys()):
             dd.set_feature(fid, td.features.pop(fid))
         return dd
 
@@ -727,7 +731,7 @@ class NDGridDomain(StructuredDomain):
         DD = NDGridDomain(self.dim, sijk, self.shape, self.affine, svol,
                           stopo, self.referential)
 
-        for fid in self.features.keys():
+        for fid in list(self.features.keys()):
             f = self.features.pop(fid)
             DD.set_feature(fid, f[bmask])
         return DD
@@ -753,8 +757,8 @@ class NDGridDomain(StructuredDomain):
             wdata[wdata > 0] = data
 
         nim = Nifti1Image(wdata, self.affine)
-        nim.get_header()['descrip'] = 'mask image representing domain %s' \
-            % self.id
+        get_header(nim)['descrip'] = ('mask image representing domain %s'
+                                      % self.id)
         if path is not None:
             save(nim, path)
         return nim
@@ -775,12 +779,12 @@ class NDGridDomain(StructuredDomain):
         the correponding set of values
 
         """
-        if isinstance(path, basestring):
+        if isinstance(path, string_types):
             nim = load(path)
         else:
             nim = path
 
-        if (nim.get_affine() != self.affine).any():
+        if (get_affine(nim) != self.affine).any():
             raise ValueError('nim and self do not have the same referential')
 
         data = nim.get_data()

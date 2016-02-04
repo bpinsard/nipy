@@ -13,6 +13,7 @@ This technique can be used to reduce the dimensionality of the data.
 More specifically, the data is projected onto the eigenvectors of the
 covariance matrix.
 """
+from __future__ import absolute_import
 
 import numpy as np
 import scipy.linalg as spl
@@ -199,7 +200,7 @@ def _get_covariance(data, UX, rmse_scales_func, mask):
     rank, n_pts = UX.shape
     C = np.zeros((rank, rank))
     # nan_to_num only for floating point masks
-    if not mask is None:
+    if mask is not None:
         nan_to_num = mask.dtype.type in (np.sctypes['float'] +
                                          np.sctypes['complex'])
     # loop over next dimension to save memory
@@ -248,7 +249,7 @@ def pca_image(img, axis='t', mask=None, ncomp=None, standardize=True,
     ----------
     img : Image
         The image on which to perform PCA over the given `axis`
-    axis : str or int
+    axis : str or int, optional
         Axis over which to perform PCA. Default is 't'. If `axis` is an integer,
         gives the index of the input (domain) axis of `img`. If `axis` is a str, can be
         an input (domain) name, or an output (range) name, that maps to an input

@@ -38,11 +38,11 @@ auditory stimulus curves.  Glover wrote these as:
 
    y(t) = c1 * t**n1 * exp(t/t1) - a2 * c2 * t**n2 * exp(t/t2)
 
-with ``n1, t1, n2, t2, a2 = (6.0, 0.9, 12, 0.9, 0.35)``.  The difference
-between Glover's expression and ours is because we (and fmristat) use
-the peak location and width to characterize the function rather than
-``n1, t1``.  The values we use are equivalent.  Specifically, in our
-formulation:
+with ``n1, t1, n2, t2, a2 = (6.0, 0.9, 12, 0.9, 0.35)``,  and ``c1, c2`` being
+``1/max(t**n1 * exp(t/t1)), 1/max(t**n2 * exp(t/t2)``.  The difference between
+Glover's expression and ours is because we (and fmristat) use the peak location
+and width to characterize the function rather than ``n1, t1``.  The values we
+use are equivalent.  Specifically, in our formulation:
 
 >>> n1, t1, c1 = gamma_params(5.4, 5.2)
 >>> np.allclose((n1-1, t1), (6.0, 0.9), rtol=0.02)
@@ -52,6 +52,7 @@ True
 True
 """
 from __future__ import division
+from __future__ import absolute_import
 
 from functools import partial
 
@@ -169,15 +170,15 @@ def spm_hrf_compat(t,
     Parameters
     ----------
     t : array-like
-        vector of times at which to sample HRF
+        vector of times at which to sample HRF.
     peak_delay : float, optional
-        delay of peak
-    peak_disp : float, optional
-        width (dispersion) of peak
+        delay of peak.
     under_delay : float, optional
-        delay of undershoot
+        delay of undershoot.
+    peak_disp : float, optional
+        width (dispersion) of peak.
     under_disp : float, optional
-        width (dispersion) of undershoot
+        width (dispersion) of undershoot.
     p_u_ratio : float, optional
         peak to undershoot ratio.  Undershoot divided by this value before
         subtracting from peak.
@@ -188,7 +189,7 @@ def spm_hrf_compat(t,
     Returns
     -------
     hrf : array
-        vector length ``len(t)`` of samples from HRF at times `t`
+        vector length ``len(t)`` of samples from HRF at times `t`.
 
     Notes
     -----

@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 import numpy as np
@@ -7,6 +8,7 @@ import scipy.stats as sp_stats
 from nibabel import Nifti1Image as Image
 from nibabel.affines import apply_affine
 
+from ..io.nibcompat import get_affine
 from ..algorithms.graph.field import field_from_graph_and_data
 from ..algorithms.graph.graph import wgraph_from_3d_grid
 from ..algorithms.statistics import empirical_pvalue
@@ -118,7 +120,7 @@ def cluster_stats(zimg, mask, height_th, height_control='fpr',
         zscore = zmap_th[maxima]
         pval = sp_stats.norm.sf(zscore)
         # Replace array indices with real coordinates
-        c['maxima'] = apply_affine(zimg.get_affine(), xyz_th[maxima])
+        c['maxima'] = apply_affine(get_affine(zimg), xyz_th[maxima])
         c['zscore'] = zscore
         c['pvalue'] = pval
         c['fdr_pvalue'] = fdr_pvalue[maxima]
@@ -188,7 +190,7 @@ def get_3d_peaks(image, mask=None, threshold=0., nn=18, order_th=0):
         shape = image.shape
         data = image.get_data().ravel()
         xyz = np.reshape(np.indices(shape), (3, np.prod(shape))).T
-    affine = image.get_affine()
+    affine = get_affine(image)
 
     if not (data > threshold).any():
         return None
@@ -235,7 +237,7 @@ def prepare_arrays(data_images, vardata_images, mask_images):
     # Prepare data & vardata arrays
     data = np.array([(d.get_data()[xyz[0], xyz[1], xyz[2]]).squeeze()
                     for d in data_images]).squeeze()
-    if vardata_images == None:
+    if vardata_images is None:
         vardata = None
     else:
         vardata = np.array([(d.get_data()[xyz[0], xyz[1], xyz[2]]).squeeze()
@@ -260,10 +262,10 @@ def onesample_test(data_images, vardata_images, mask_images, stat_id,
     # Compute z-map image
     zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = ptest.zscore()
-    zimg = Image(zmap, data_images[0].get_affine())
+    zimg = Image(zmap, get_affine(data_images[0]))
 
     # Compute mask image
-    maskimg = Image(mask.astype(np.int8), data_images[0].get_affine())
+    maskimg = Image(mask.astype(np.int8), get_affine(data_images[0]))
 
     # Multiple comparisons
     if permutations <= 0:
@@ -297,7 +299,7 @@ def twosample_test(data_images, vardata_images, mask_images, labels, stat_id,
                                               mask_images)
 
     # Create two-sample permutation test instance
-    if vardata_images == None:
+    if vardata_images is None:
         ptest = permutation_test_twosample(
             data[labels == 1], data[labels == 2], xyz, stat_id=stat_id)
     else:
@@ -309,10 +311,10 @@ def twosample_test(data_images, vardata_images, mask_images, labels, stat_id,
     # Compute z-map image
     zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = ptest.zscore()
-    zimg = Image(zmap, data_images[0].get_affine())
+    zimg = Image(zmap, get_affine(data_images[0]))
 
     # Compute mask image
-    maskimg = Image(mask, data_images[0].get_affine())
+    maskimg = Image(mask, get_affine(data_images[0]))
 
     # Multiple comparisons
     if permutations <= 0:
@@ -356,7 +358,7 @@ def linear_model_fit(data_images, mask_images, design_matrix, vector):
     # Compute z-map image
     zmap = np.zeros(data_images[0].shape).squeeze()
     zmap[list(xyz)] = c.zscore()
-    zimg = Image(zmap, data_images[0].get_affine())
+    zimg = Image(zmap, get_affine(data_images[0]))
 
     return zimg
 
@@ -379,7 +381,7 @@ class LinearModel(object):
         # the 'sampling' direction is assumed to be the last
         # TODO: check that all input images have the same shape and
         # that it's consistent with the mask
-        nomask = mask == None
+        nomask = mask is None
         if nomask:
             self.xyz = None
             self.axis = len(data[0].shape) - 1
@@ -388,7 +390,7 @@ class LinearModel(object):
             self.axis = 1
 
         self.spatial_shape = data[0].shape[0: -1]
-        self.affine = data[0].get_affine()
+        self.affine = get_affine(data[0])
 
         self.glm = []
         for i in range(len(data)):
@@ -423,7 +425,7 @@ class LinearModel(object):
             c += g.contrast(vector)
 
         def affect_inmask(dest, src, xyz):
-            if xyz == None:
+            if xyz is None:
                 dest = src
             else:
                 dest[xyz] = src

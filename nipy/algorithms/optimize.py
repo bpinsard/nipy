@@ -1,10 +1,11 @@
+from __future__ import absolute_import
+from __future__ import print_function
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 # add-ons to scipy.optimize
 
 import numpy as np 
 from scipy.optimize import brent, approx_fprime
-
 
 
 def _linesearch_brent(func, p, xi, tol=1e-3):
@@ -27,8 +28,9 @@ def _wrap(function, args):
     return ncalls, wrapper
 
 
-def fmin_steepest(f, x0, fprime=None, xtol=1e-4, ftol=1e-4, 
-                  maxiter=None, callback=None, disp=True):
+def fmin_steepest(f, x0, fprime=None, xtol=1e-4, ftol=1e-4,
+                  maxiter=None, epsilon=1.4901161193847656e-08,
+                  callback=None, disp=True):
     """
     Minimize a function using a steepest gradient descent
     algorithm. This complements the collection of minimization
@@ -51,6 +53,9 @@ def fmin_steepest(f, x0, fprime=None, xtol=1e-4, ftol=1e-4,
       Relative tolerance on function variations
     maxiter : int
       Maximum number of iterations
+    epsilon : float or ndarray
+      If fprime is approximated, use this value for the step
+    size (can be scalar or vector).
     callback : callable
       Optional function called after each iteration is complete
     disp : bool
@@ -64,10 +69,10 @@ def fmin_steepest(f, x0, fprime=None, xtol=1e-4, ftol=1e-4,
     x = np.asarray(x0).flatten()
     fval = np.squeeze(f(x))
     it = 0 
-    if maxiter == None: 
+    if maxiter is None: 
         maxiter = x.size*1000
-    if fprime == None:
-        grad_calls, myfprime = _wrap(approx_fprime, (f, step))
+    if fprime is None:
+        grad_calls, myfprime = _wrap(approx_fprime, (f, epsilon))
     else:
         grad_calls, myfprime = _wrap(fprime, args)
 
@@ -82,7 +87,7 @@ def fmin_steepest(f, x0, fprime=None, xtol=1e-4, ftol=1e-4,
         if disp:
             print('Performing line search...')
         fval, x = _linesearch_brent(f, x, direc, tol=xtol)
-        if not callback == None:
+        if callback is not None:
             callback(x)
         if (2.0*(fval0-fval) <= ftol*(abs(fval0)+abs(fval))+1e-20): 
             break

@@ -2,6 +2,7 @@
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """ Image interpolators using ndimage.
 """
+from __future__ import absolute_import
 
 import os
 import tempfile
@@ -10,23 +11,35 @@ import numpy as np
 
 from scipy import ndimage
 
+from ..fixes.scipy.ndimage import map_coordinates
+
 class ImageInterpolator(object):
     """ Interpolate Image instance at arbitrary points in world space
-    
-    The resampling is done with scipy.ndimage.
+
+    The resampling is done with ``scipy.ndimage``.
     """
-    def __init__(self, image, order=3):
+
+    def __init__(self, image, order=3, mode='constant', cval=0.0):
         """
         Parameters
         ----------
         image : Image
-           Image to be interpolated
+           Image to be interpolated.
         order : int, optional
-           order of spline interpolation as used in scipy.ndimage.
+           order of spline interpolation as used in ``scipy.ndimage``.
            Default is 3.
+        mode : str, optional
+           Points outside the boundaries of the input are filled according to
+           the given mode ('constant', 'nearest', 'reflect' or 'wrap'). Default
+           is 'constant'.
+        cval : scalar, optional
+           Value used for points outside the boundaries of the input if
+           mode='constant'. Default is 0.0.
         """
         self.image = image
         self.order = order
+        self.mode = mode
+        self.cval = cval
         self._datafile = None
         self._buildknots()
 
@@ -62,12 +75,11 @@ class ImageInterpolator(object):
 
     def evaluate(self, points):
         """ Resample image at points in world space
-        
+
         Parameters
         ----------
         points : array
-           values in self.image.coordmap.output_coords.  Each row is a
-	   point. 
+           values in self.image.coordmap.output_coords.  Each row is a point.
 
         Returns
         -------
@@ -79,10 +91,12 @@ class ImageInterpolator(object):
         points.shape = (points.shape[0], np.product(output_shape))
         cmapi = self.image.coordmap.inverse()
         voxels = cmapi(points.T).T
-        V = ndimage.map_coordinates(self.data, 
-                                     voxels,
-                                     order=self.order,
-                                     prefilter=False)
+        V = map_coordinates(self.data,
+                            voxels,
+                            order=self.order,
+                            mode=self.mode,
+                            cval=self.cval,
+                            prefilter=False)
         # ndimage.map_coordinates returns a flat array,
         # it needs to be reshaped to the original shape
         V.shape = output_shape

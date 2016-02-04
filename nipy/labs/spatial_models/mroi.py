@@ -1,12 +1,17 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
+from __future__ import print_function
+from __future__ import absolute_import
 
 import numpy as np
 
 from nibabel import load, Nifti1Image
 
+from nipy.io.nibcompat import get_header, get_affine
+
 from . import discrete_domain as ddom
 
+from nipy.externals.six import string_types
 
 ##############################################################################
 # class SubDomains
@@ -443,7 +448,7 @@ class SubDomains(object):
             for id in self.get_id():
                 res[self.select_id(id, roi=False)] = f[self.select_id(id)]
         else:
-            if fid in self.roi_features.keys():
+            if fid in self.roi_features:
                 f = self.get_roi_feature(fid)
                 for id in self.get_id():
                     res[self.select_id(id, roi=False)] = f[self.select_id(id)]
@@ -473,7 +478,7 @@ class SubDomains(object):
           The results
 
         """
-        if fid == None:
+        if fid is None:
             # integrate the 1 function if no feature id provided
             if id is not None:
                 lsum = self.get_volume(id)
@@ -551,7 +556,7 @@ class SubDomains(object):
 
         """
         # check we do not modify the `id` feature
-        if 'id' in self.roi_features.keys() and fid == 'id':
+        if 'id' in self.roi_features and fid == 'id':
             return
         # check we will not override anything
         if fid in self.roi_features and not override:
@@ -624,7 +629,7 @@ class SubDomains(object):
 
         """
         if not isinstance(self.domain, ddom.NDGridDomain):
-            print 'self.domain is not an NDGridDomain; nothing was written.'
+            print('self.domain is not an NDGridDomain; nothing was written.')
             return None
 
         if fid is None:
@@ -661,10 +666,10 @@ class SubDomains(object):
             # MROI object was defined on a masked image: we square it back.
             wdata = -np.ones(mask.shape, data.dtype)
             wdata[mask] = data
-            nim = Nifti1Image(wdata, tmp_image.get_affine())
+            nim = Nifti1Image(wdata, get_affine(tmp_image))
         # set description of the image
         if descrip is not None:
-            nim.get_header()['descrip'] = descrip
+            get_header(nim)['descrip'] = descrip
         return nim
 
     ###
@@ -695,14 +700,14 @@ class SubDomains(object):
         # set new features
         # (it's ok to do that after labels and id modification since we are
         # poping out the former features and use the former id indices)
-        for fid in self.features.keys():
+        for fid in self.features:
             f = self.remove_feature(fid)
             sf = [f[id] for id in id_list_pos]
             self.set_feature(fid, sf)
         # set new ROI features
         # (it's ok to do that after labels and id modification since we are
         # poping out the former features and use the former id indices)
-        for fid in self.roi_features.keys():
+        for fid in self.roi_features:
             if fid != 'id':
                 f = self.remove_roi_feature(fid)
                 sf = np.ravel(f[id_list_pos])
@@ -752,12 +757,12 @@ def subdomain_from_image(mim, nn=18):
     Only labels > -1 are considered
 
     """
-    if isinstance(mim, basestring):
+    if isinstance(mim, string_types):
         iim = load(mim)
     else:
         iim = mim
 
-    return subdomain_from_array(iim.get_data(), iim.get_affine(), nn)
+    return subdomain_from_array(iim.get_data(), get_affine(iim), nn)
 
 
 def subdomain_from_position_and_image(nim, pos):
@@ -776,7 +781,7 @@ def subdomain_from_position_and_image(nim, pos):
     coord = np.array([tmp.domain.coord[tmp.label == k].mean(0)
                       for k in range(tmp.k)])
     idx = ((coord - pos) ** 2).sum(1).argmin()
-    return subdomain_from_array(nim.get_data() == idx, nim.get_affine())
+    return subdomain_from_array(nim.get_data() == idx, get_affine(nim))
 
 
 def subdomain_from_balls(domain, positions, radii):

@@ -10,8 +10,16 @@ Author : Bertrand Thirion, 2005-2008
 
 TODO : add a method 'global field', i.e. non-subject-specific info
 """
+from __future__ import absolute_import
 
 import numpy as np
+from warnings import warn
+
+warn('Module nipy.labs.spatial_models.parcellation deprecated, ' +
+     'will be removed',
+     FutureWarning,
+     stacklevel=2)
+
 
 ###################################################################
 # Parcellation class
