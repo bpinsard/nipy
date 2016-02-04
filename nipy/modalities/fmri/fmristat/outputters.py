@@ -17,6 +17,7 @@ then passing them to these here ``RegressionOutput`` containers via call, to get
 useful arrays, and then putting the results back into the ``RegressionOutput``
 containers via slicing (__setitem__).
 """
+from __future__ import absolute_import
 
 __docformat__ = 'restructuredtext'
 
@@ -146,13 +147,13 @@ class TOutput(RegressionOutputList):
         retvals = []
         # Set self.list to contain selected input catching objects
         self.list = []
-        if not effect is None:
+        if effect is not None:
             retvals.append('effect')
             self.list.append(effect)
-        if not sd is None:
+        if sd is not None:
             retvals.append('sd')
             self.list.append(sd)
-        if not t is None:
+        if t is not None:
             retvals.append('t')
             self.list.append(t)
         # Set return function to return selected inputs

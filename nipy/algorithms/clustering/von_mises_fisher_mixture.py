@@ -4,6 +4,9 @@ i.e. the equaivalent of mixture of Gaussian on the sphere.
 
 Author: Bertrand Thirion, 2010-2011
 """
+from __future__ import print_function
+from __future__ import absolute_import
+
 import numpy as np
 from warnings import warn
 
@@ -321,7 +324,7 @@ def select_vmm(krange, precision, null_class, x, ninit=10, bias=None,
         else:
             bic = ll - np.log(x.shape[0]) * (k * 3 - 1) / x.shape[0]
         if verbose:
-            print k, bic
+            print(k, bic)
         if bic > score:
             best_model = aux
             score = bic
@@ -376,7 +379,7 @@ def select_vmm_cv(krange, precision, x, null_class, cv_index,
                                   ninit, bias=bias, maxiter=maxiter)
 
         if verbose:
-            print k, mll[ - 1]
+            print(k, mll[ - 1])
         if mll[ - 1] > score:
             best_model = aux
             score = mll[ - 1]
@@ -413,12 +416,12 @@ def example_noisy():
     x = (x.T / np.sqrt(np.sum(x ** 2, 1))).T
 
     precision = 100.
-    vmm = select_vmm(range(2, 7), precision, True, x)
+    vmm = select_vmm(list(range(2, 7)), precision, True, x)
     vmm.show(x)
 
     # check that it sums to 1
     s, area = sphere_density(100)
-    print (vmm.mixture_density(s) * area).sum()
+    print((vmm.mixture_density(s) * area).sum())
 
 
 def example_cv_nonoise():
@@ -433,7 +436,7 @@ def example_cv_nonoise():
 
     precision = 50.
     sub = np.repeat(np.arange(10), 3)
-    vmm = select_vmm_cv(range(1, 8), precision, x, cv_index=sub,
+    vmm = select_vmm_cv(list(range(1, 8)), precision, x, cv_index=sub,
                         null_class=False, ninit=20)
     vmm.show(x)
 

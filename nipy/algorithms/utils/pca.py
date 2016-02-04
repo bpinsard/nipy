@@ -13,6 +13,7 @@ This technique can be used to reduce the dimensionality of the data.
 More specifically, the data is projected onto the eigenvectors of the
 covariance matrix.
 """
+from __future__ import absolute_import
 
 import numpy as np
 import scipy.linalg as spl
@@ -199,7 +200,7 @@ def _get_covariance(data, UX, rmse_scales_func, mask):
     rank, n_pts = UX.shape
     C = np.zeros((rank, rank))
     # nan_to_num only for floating point masks
-    if not mask is None:
+    if mask is not None:
         nan_to_num = mask.dtype.type in (np.sctypes['float'] +
                                          np.sctypes['complex'])
     # loop over next dimension to save memory

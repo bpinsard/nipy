@@ -1,5 +1,7 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
+from __future__ import absolute_import
+
 import numpy as np
 import scipy.stats as sps
 
@@ -19,7 +21,7 @@ class glm(object):
              model='spherical', method=None, niter=2):
 
         # Check dimensions
-        if Y == None:
+        if Y is None:
             return
         else:
             self.fit(Y, X, formula, axis, model, method, niter)
@@ -36,7 +38,7 @@ class glm(object):
             model = 'mfx'
         if model in models:
             self.model = model
-            if method == None:
+            if method is None:
                 self.method = models[model][0]
             elif models[model].count(method):
                 self.method = method
@@ -202,7 +204,7 @@ class contrast(object):
         Return a parametric approximation of the p-value associated
         with the null hypothesis: (H0) 'contrast equals baseline'
         """
-        if self._stat == None or not self._baseline == baseline:
+        if self._stat is None or not self._baseline == baseline:
             self._stat = self.stat(baseline)
         # Valid conjunction as in Nichols et al, Neuroimage 25, 2005.
         if self.type in ['t', 'tmin']:
@@ -220,7 +222,7 @@ class contrast(object):
         Return a parametric approximation of the z-score associated
         with the null hypothesis: (H0) 'contrast equals baseline'
         """
-        if self._pvalue == None or not self._baseline == baseline:
+        if self._pvalue is None or not self._baseline == baseline:
             self._pvalue = self.pvalue(baseline)
 
         # Avoid inf values kindly supplied by scipy.

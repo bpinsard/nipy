@@ -8,12 +8,14 @@ not whether it is exact
 """
 
 from __future__ import with_statement
+from __future__ import absolute_import
 
 import numpy as np
-from os.path import join, dirname
+import os.path as osp
+#from os.path import join, dirname, walk
 from ..experimental_paradigm import (EventRelatedParadigm, BlockParadigm)
 from ..design_matrix import (dmtx_light, _convolve_regressors, dmtx_from_csv,
-                             make_dmtx)
+                             make_dmtx, _cosine_drift)
 
 from nibabel.tmpdirs import InTemporaryDirectory
 
@@ -27,16 +29,16 @@ except ImportError:
 else:
     have_mpl = True
 
-
-DMTX = np.load(join(dirname(__file__), 'spm_dmtx.npz'))
-
+# load the spm file to test cosine basis
+my_path = osp.dirname(osp.abspath(__file__))
+full_path_dmtx_file = osp.join(my_path, 'spm_dmtx.npz')
+DMTX = np.load(full_path_dmtx_file)
 
 def basic_paradigm():
     conditions = ['c0', 'c0', 'c0', 'c1', 'c1', 'c1', 'c2', 'c2', 'c2']
     onsets = [30, 70, 100, 10, 30, 90, 30, 40, 60]
     paradigm =  EventRelatedParadigm(conditions, onsets)
     return paradigm
-
 
 def modulated_block_paradigm():
     conditions = ['c0', 'c0', 'c0', 'c1', 'c1', 'c1', 'c2', 'c2', 'c2']
@@ -69,6 +71,35 @@ def test_show_dmtx():
     frametimes = np.linspace(0, 127 * 1.,128)
     DM = make_dmtx(frametimes, drift_model='polynomial', drift_order=3)
     ax = DM.show()
+    assert (ax is not None)
+
+    # test the colormap
+    ax = DM.show(cmap=matplotlib.pyplot.cm.gray)
+    assert (ax is not None)
+
+def test_cosine_drift():
+    # add something so that when the tests are launched from a different directory
+    # we still find the file ' 'dctmtx_N_20_order_4.txt' ? 
+
+    spm_drifts = DMTX['cosbf_dt_1_nt_20_hcut_0p1'] # np.loadtxt('dctmtx_N_20_order_4.txt')
+    tim = np.arange(20)
+    P = 10 # period is half the time, gives us an order 4
+    nipy_drifts = _cosine_drift(P, tim) #
+    assert_almost_equal(spm_drifts[:,1:], nipy_drifts[:,:-1])
+    # nipy_drifts is placing the constant at the end [:,:-1]
+
+
+@dec.skipif(not have_mpl)
+def test_show_constrast():
+    # test that the show code indeed (formally) runs
+    frametimes = np.linspace(0, 127 * 1.,128)
+    DM = make_dmtx(frametimes, drift_model='polynomial', drift_order=3)
+    contrast = np.random.standard_normal((3, DM.matrix.shape[1]))
+    ax = DM.show_contrast(contrast)
+    assert (ax is not None)
+
+    # test the colormap
+    ax = DM.show_contrast(contrast, cmap=matplotlib.pyplot.cm.gray)
     assert (ax is not None)
 
 
@@ -174,7 +205,7 @@ def test_dmtx2():
     hrf_model = 'Canonical'
     X, names= dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                         drift_model='cosine', hfcut=63)
-    assert_equal(len(names), 8)
+    assert_equal(len(names), 7) # was 8 with old cosine
 
 def test_dmtx3():
     # idem test_dmtx1 with a different drift term
@@ -247,7 +278,7 @@ def test_dmtx9():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                             drift_model='polynomial', drift_order=3,
-                            fir_delays=range(1, 5))
+                            fir_delays=list(range(1, 5)))
     assert_equal(len(names), 16)
 
 def test_dmtx10():
@@ -258,7 +289,7 @@ def test_dmtx10():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                          drift_model='polynomial', drift_order=3,
-                         fir_delays=range(1, 5))
+                         fir_delays=list(range(1, 5)))
     onset = paradigm.onset[paradigm.con_id == 'c0'].astype(np.int)
     assert_true(np.all((X[onset + 1, 0] == 1)))
 
@@ -271,7 +302,7 @@ def test_dmtx11():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                          drift_model='polynomial', drift_order=3,
-                         fir_delays=range(1, 5))
+                         fir_delays=list(range(1, 5)))
     onset = paradigm.onset[paradigm.con_id == 'c0'].astype(np.int)
     assert_true(np.all(X[onset + 3, 2] == 1))
 
@@ -284,7 +315,7 @@ def test_dmtx12():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                          drift_model='polynomial', drift_order=3,
-                         fir_delays=range(1, 5))
+                         fir_delays=list(range(1, 5)))
     onset = paradigm.onset[paradigm.con_id == 'c2'].astype(np.int)
     assert_true(np.all(X[onset + 4, 11] == 1))
 
@@ -297,7 +328,7 @@ def test_dmtx13():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                           drift_model='polynomial', drift_order=3,
-                          fir_delays=range(1, 5))
+                          fir_delays=list(range(1, 5)))
     onset = paradigm.onset[paradigm.con_id == 'c0'].astype(np.int)
     assert_true(np.all(X[onset + 1, 0] == 1))
 
@@ -311,7 +342,7 @@ def test_dmtx14():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm,  hrf_model=hrf_model,
                          drift_model='polynomial', drift_order=3,
-                         fir_delays=range(1, 5))
+                         fir_delays=list(range(1, 5)))
     onset = paradigm.onset[paradigm.con_id == 'c0'].astype(np.int)
     assert_true(np.all(X[onset + 1, 0] > .9))
 
@@ -372,14 +403,14 @@ def test_dmtx19():
     hrf_model = 'FIR'
     X, names = dmtx_light(frametimes, paradigm, hrf_model=hrf_model, 
                             drift_model='polynomial', drift_order=3,
-                            fir_delays=range(1, 5))
+                            fir_delays=list(range(1, 5)))
     idx = paradigm.onset[paradigm.con_id == 0].astype(np.int)
     assert_array_equal(X[idx + 1, 0], X[idx + 2, 1])
 
 
 def test_dmtx20():
     # Test for commit 10662f7
-    frametimes = np.arange(0, 127) # integers
+    frametimes = np.arange(0, 128) # was 127 in old version of _cosine_drift 
     paradigm = modulated_event_paradigm()
     X, names = dmtx_light(frametimes, paradigm, hrf_model='canonical',
         drift_model='cosine')
@@ -394,7 +425,7 @@ def test_fir_block():
     tr = 1.0
     frametimes = np.linspace(0, 127 * tr, 128)
     X, names = dmtx_light(frametimes, bp, hrf_model='fir', drift_model='blank',
-                          fir_delays=range(0, 4))
+                          fir_delays=list(range(0, 4)))
     idx = bp.onset[bp.con_id == 1].astype(np.int)
     assert_equal(X.shape, (128, 13))
     assert_true((X[idx, 4] == 1).all())
@@ -448,7 +479,7 @@ def test_spm_2():
 def test_frametimes_as_a_list():
     # design matrix should work with frametimes provided as a list
     paradigm = basic_paradigm()
-    frametimes = range(0, 99)
+    frametimes = list(range(0, 99))
     X1 = make_dmtx(frametimes, paradigm, drift_model='blank')
     frametimes = np.arange(0, 99)
     X2 = make_dmtx(frametimes, paradigm, drift_model='blank')

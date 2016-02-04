@@ -6,12 +6,15 @@ This module should not import nose at the top level to avoid a run-time
 dependency on nose.
 """
 from __future__ import print_function
+from __future__ import absolute_import
 
 from numpy.testing.decorators import *
 
 from nipy.utils import templates, example_data, DataError
 
 from nibabel.optpkg import optional_package
+
+from nipy.externals.six import string_types
 
 matplotlib, HAVE_MPL, _ = optional_package('matplotlib')
 needs_mpl = skipif(not HAVE_MPL, "Test needs matplotlib")
@@ -52,7 +55,7 @@ def make_label_dec(label, ds=None):
     >>> f.hard
     True
     """
-    if isinstance(label,basestring):
+    if isinstance(label, string_types):
         labels = [label]
     else:
         labels = label
@@ -111,17 +114,6 @@ def if_templates(f):
 
 def if_example_data(f):
     return if_datasource(example_data, 'Cannot find example data')(f)
-
-
-def skip_doctest_if(condition):
-    """Decorator - mark a function or method for skipping its doctest.
-
-    This decorator allows you to mark a function whose docstring you wish to
-    omit from testing, while preserving the docstring for introspection, help,
-    etc."""
-    if not condition:
-        return lambda f : f
-    return make_label_dec('skip_doctest')
 
 
 def needs_mpl_agg(func):

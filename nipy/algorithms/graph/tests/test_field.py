@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 #!/usr/bin/env python
 import numpy as np
 import numpy.random as nr
@@ -270,7 +271,7 @@ def test_subfield2():
     myfield = basic_field_random()
     valid = np.zeros(myfield.V)
     sf = myfield.subfield(valid)
-    assert_true(sf == None)
+    assert_true(sf is None)
 
 
 def test_ward1():

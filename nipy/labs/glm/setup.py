@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import absolute_import, print_function
 
 
 def configuration(parent_package='', top_path=None):
@@ -9,7 +10,8 @@ def configuration(parent_package='', top_path=None):
     config.add_extension(
                 'kalman',
                 sources=['kalman.pyx'],
-                libraries=['cstat'])
+                libraries=['cstat']
+                )
     return config
 
 

@@ -1,11 +1,19 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-try: # python 2
-    from ConfigParser import ConfigParser
-except ImportError: # python 3
-    from configparser import ConfigParser
+from __future__ import absolute_import
 
 import os
+import sys
+
+# Cannot use internal copy of six because can't import from nipy tree
+# This is to allow setup.py to run without a full nipy
+PY3 = sys.version_info[0] == 3
+if PY3:
+    string_types = str,
+    from configparser import ConfigParser
+else:
+    string_types = basestring,
+    from ConfigParser import ConfigParser
 
 NIPY_DEFAULTS = dict()
 
@@ -25,7 +33,7 @@ def get_nipy_info():
         if value.startswith('~'):
             info[key] = os.path.expanduser(value)
     # Ugly fix for bug 409269
-    if 'libraries' in info and isinstance(info['libraries'], basestring):
+    if 'libraries' in info and isinstance(info['libraries'], string_types):
         info['libraries'] = [info['libraries']]
     # End of ugly fix
     return info

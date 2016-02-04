@@ -36,7 +36,7 @@ import ipython_console_highlighting
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.doctest',
-              'sphinx.ext.pngmath',
+              'sphinx.ext.mathjax',
               'sphinx.ext.autosummary',
               'sphinx.ext.inheritance_diagram',
               'numpy_ext.numpydoc',
@@ -60,7 +60,7 @@ master_doc = 'index'
 project = 'nipy'
 
 #copyright = ':ref:`2005-2010, Neuroimaging in Python team. <nipy-software-license>`'
-copyright = '2005-2013, Neuroimaging in Python team'
+copyright = '2005-2015, Neuroimaging in Python team'
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.

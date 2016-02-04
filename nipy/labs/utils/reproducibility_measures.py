@@ -1,22 +1,23 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
-These are several functions for computing reproducibility measures.
-A use script should be appended soon on the repository.
+Functions for computing reproducibility measures.
 
-In general thuis proceeds as follows:
-The dataset is subject to jacknife subampling ('splitting'),
-each subsample being analysed independently.
-A reproducibility measure is then derived;
+General procedure is:
+ - dataset is subject to jacknife subampling ('splitting'),
+ - each subsample being analysed independently,
+ - a reproducibility measure is then derived;
 
-All is used to produce the work described in
-Analysis of a large fMRI cohort:
+It is used to produce the work described in Analysis of a large fMRI
+cohort:
+
 Statistical and methodological issues for group analyses.
 Thirion B, Pinel P, Meriaux S, Roche A, Dehaene S, Poline JB.
 Neuroimage. 2007 Mar;35(1):105-20.
 
 Bertrand Thirion, 2009-2010
 """
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -61,7 +62,7 @@ def cluster_threshold(stat_map, domain, th, csize):
     domain: Nifti1Image instance,
           referential- and domain-defining image
     th (float): cluster-forming threshold
-    cisze (int>0): cluster size threshold
+    csize (int>0): cluster size threshold
 
     Returns
     -------
@@ -164,7 +165,7 @@ def get_peak_position_from_thresholded_map(stat_map, domain, threshold):
     
     # extract the peaks
     peaks = get_3d_peaks(simage, threshold=threshold, order_th=2)
-    if peaks == None:
+    if peaks is None:
         return None
 
     pos = np.array([p['pos'] for p in peaks])
@@ -315,12 +316,12 @@ def statistics_from_position(target, data, sigma=1.0):
                 0 is bad
     """
     from ...algorithms.utils.fast_distance import euclidean_distance as ed
-    if data == None:
-        if target == None:
+    if data is None:
+        if target is None:
             return 0.# could be 1.0 ?
         else:
             return 0.
-    if target == None:
+    if target is None:
         return 0.
 
     dmatrix = ed(data, target) / sigma
@@ -479,7 +480,7 @@ def peak_reproducibility(data, vardata, domain, ngroups, sigma, method='crfx',
           the input data from which everything is computed
     vardata: array of shape (nvox,nsubj)
              the variance of the data that is also available
-    domain: refenrtial- and domain-defining image
+    domain: referential- and domain-defining image
     ngroups (int),
              Number of subbgroups to be drawn
     sigma: float, parameter that encodes how far far is
@@ -656,7 +657,7 @@ def group_reproducibility_metrics(
     Returns
     -------
     cluster_rep_results: dictionary,
-                         results of cluster-level reproducibility analysi
+                         results of cluster-level reproducibility analysis
     voxel_rep_results: dictionary,
                        results of voxel-level reproducibility analysis
     peak_rep_results: dictionary,
@@ -759,7 +760,7 @@ def coord_bsa(domain, betas, theta=3., dmax=5., ths=0, thq=0.5, smin=0,
     smin: int, optional,
           minimal size of the regions to validate them
     afname: string, optional
-            path where intermediate resullts cam be pickelized
+            path where intermediate results cam be pickled
 
     Returns
     -------
@@ -770,7 +771,7 @@ def coord_bsa(domain, betas, theta=3., dmax=5., ths=0, thq=0.5, smin=0,
 
     crmap, AF, BF, p = compute_BSA_quick(
         domain, betas, dmax, thq, smin, ths, theta, verbose=0)
-    if AF == None:
+    if AF is None:
         return None
     if afname is not None:
         import pickle

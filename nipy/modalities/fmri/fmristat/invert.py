@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 
@@ -47,7 +48,7 @@ def invertR(delta, IRF, niter=20):
                      niter=niter)
 
     for iteration in model:
-        model.next()
+        next(model)
 
     a, b, c = model.theta
 

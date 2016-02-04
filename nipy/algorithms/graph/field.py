@@ -12,10 +12,13 @@ WeightedGraph and feature data.
 
 Author:Bertrand Thirion, 2006--2011
 """
+from __future__ import print_function
+from __future__ import absolute_import
+
 from warnings import warn
 import numpy as np
 
-from .graph import WeightedGraph
+from .graph import WeightedGraph, Graph
 
 NEGINF = -np.inf
 
@@ -103,7 +106,7 @@ class Field(WeightedGraph):
             self.edges = edges
             self.weights = weights
         self.field = []
-        if field == None:
+        if field is None:
             pass
         else:
             if np.size(field) == self.V:
@@ -319,7 +322,6 @@ class Field(WeightedGraph):
               labelling of the vertices according to their bassin
         """
         import numpy.ma as ma
-        from graph import Graph
 
         if (np.size(self.field) == 0):
             raise ValueError('No field has been defined so far')
@@ -477,11 +479,11 @@ class Field(WeightedGraph):
         if np.size(self.field) == 0:
             raise ValueError('No field has been defined so far')
 
-        if (seeds == None) and (label == None):
+        if (seeds is None) and (label is None):
             raise ValueError('No initialization has been provided')
         k = np.size(seeds)
         inertia_old = NEGINF
-        if seeds == None:
+        if seeds is None:
             k = label.max() + 1
             if np.size(np.unique(label)) != k:
                 raise ValueError('missing values, cannot proceed')
@@ -509,7 +511,7 @@ class Field(WeightedGraph):
                 seeds[j] = lj[tj]
                 inertia += np.sum((cent - self.field[lj]) ** 2)
             if verbose:
-                print i, inertia
+                print(i, inertia)
             if np.absolute(inertia_old - inertia) < eps:
                 break
             inertia_old = inertia
@@ -566,7 +568,7 @@ class Field(WeightedGraph):
         sum(valid) == 0 then None is returned
         """
         G = self.subgraph(valid)
-        if G == None:
+        if G is None:
             return None
         field = self.field[valid]
         if len(G.edges) == 0:

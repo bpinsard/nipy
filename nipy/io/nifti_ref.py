@@ -126,6 +126,7 @@ For saving a NIPY image to NIFTI, see the docstring for :func:`nipy2nifti`.
 For loading a NIFTI image to NIPY, see the docstring for :func:`nifti2nipy`.
 
 """
+from __future__ import absolute_import
 
 import sys
 
@@ -390,7 +391,7 @@ def nipy2nifti(img, data_dtype=None, strict=None, fix0=True):
         # Make sure this time-like axis is first non-space axis
         if in_ax != 3:
             data = np.rollaxis(data, in_ax, 3)
-            order = range(n_ns)
+            order = list(range(n_ns))
             order.pop(in_ax - 3)
             order.insert(0, in_ax - 3)
             ns_pixdims = [ns_pixdims[i] for i in order]
@@ -437,7 +438,7 @@ def _find_time_like(coordmap, fix0):
                 same_time_out = non_space_onames.index(name) + 3
                 corr_in = out2in[same_time_out]
                 if corr_out is None:
-                    if not corr_in is None:
+                    if corr_in is not None:
                         raise NiftiError("Axis type '%s' found in input and "
                                          "output but they do not appear to "
                                          "match" % name)
@@ -563,11 +564,11 @@ def nifti2nipy(ni_img):
     # Get information from dim_info
     input_names3 = list('ijk')
     freq, phase, slice = hdr.get_dim_info()
-    if not freq is None:
+    if freq is not None:
         input_names3[freq] = 'freq'
-    if not phase is None:
+    if phase is not None:
         input_names3[phase] = 'phase'
-    if not slice is None:
+    if slice is not None:
         input_names3[slice] = 'slice'
     # Add to mm scaling, with warning
     space_units, time_like_units = hdr.get_xyzt_units()

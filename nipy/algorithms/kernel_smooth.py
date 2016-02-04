@@ -3,6 +3,7 @@
 """
 Linear filter(s).  For the moment, only a Gaussian smoothing filter
 """
+from __future__ import absolute_import
 
 import gc
 
@@ -101,7 +102,7 @@ class LinearFilter(object):
             for i in range(len(self.bshape)):
                 _X[i] /= f[i]
         # whiten?
-        if self.cov != None:
+        if self.cov is not None:
             _chol = npl.cholesky(self.cov)
             _X = np.dot(npl.inv(_chol), _X)
         # compute squared distance
