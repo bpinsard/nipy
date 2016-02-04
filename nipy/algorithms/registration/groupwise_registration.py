@@ -11,6 +11,8 @@ Roche, Alexis (2011) A four-dimensional registration algorithm with application
 to joint correction of motion and slice timing in fMRI. *Medical Imaging, IEEE
 Transactions on*;  30:1546--1554
 """
+from __future__ import absolute_import
+from __future__ import print_function
 
 import os
 import warnings
@@ -27,6 +29,7 @@ from ...core.image.image_spaces import (make_xyz_image,
                                         xyz_affine,
                                         as_xyz_image)
 from ..slicetiming import timefuncs
+from .type_check import (check_type, check_type_and_shape)
 from .optimizer import configure_optimizer, use_derivatives
 from .affine import Rigid, Affine
 from ._registration import (_cspline_transform,
@@ -36,7 +39,6 @@ from ._registration import (_cspline_transform,
 
 VERBOSE = os.environ.get('NIPY_DEBUG_PRINT', False)
 INTERLEAVED = None
-OPTIMIZER = 'ncg'
 XTOL = 1e-5
 FTOL = 1e-5
 GTOL = 1e-5
@@ -44,20 +46,6 @@ STEPSIZE = 1e-6
 SMALL = 1e-20
 MAXITER = 64
 MAXFUN = None
-BORDERS = 1, 1, 1
-REFSCAN = 0
-EXTRAPOLATE_SPACE = 'reflect'
-EXTRAPOLATE_TIME = 'reflect'
-
-LOOPS = 5  # loops within each run
-BETWEEN_LOOPS = 5  # loops used to realign different runs
-SPEEDUP = 5  # image sub-sampling factor for speeding up
-"""
-# How to tune those parameters for a multi-resolution implementation
-LOOPS = 5, 1
-BETWEEN_LOOPS = 5, 1
-SPEEDUP = 5, 2
-"""
 
 
 def interp_slice_times(Z, slice_times, tr):
@@ -89,7 +77,7 @@ def make_grid(dims, subsampling=(1, 1, 1), borders=(0, 0, 0)):
 
 
 def guess_slice_axis_and_direction(slice_info, affine):
-    if slice_info == None:
+    if slice_info is None:
         orient = io_orientation(affine)
         slice_axis = int(np.where(orient[:, 0] == 2)[0])
         slice_direction = int(orient[slice_axis, 1])
@@ -140,12 +128,12 @@ class Image4d(object):
         self._init_timing_parameters()
 
     def get_data(self):
-        if self._data == None:
+        if self._data is None:
             self._load_data()
         return self._data
 
     def get_shape(self):
-        if self._shape == None:
+        if self._shape is None:
             self._load_data()
         return self._shape
 
@@ -192,8 +180,9 @@ class Image4d(object):
         return (t - corr) / self.tr
 
     def free_data(self):
-        if not self._get_data == None:
+        if self._get_data is not None:
             self._data = None
+
 
 
 class Realign4dAlgorithm(object):
@@ -204,19 +193,34 @@ class Realign4dAlgorithm(object):
                  transforms=None,
                  time_interp=True,
                  subsampling=(1, 1, 1),
-                 borders=BORDERS,
-                 optimizer=OPTIMIZER,
+                 refscan=0,
+                 borders=(1, 1, 1),
+                 optimizer='ncg',
                  optimize_template=True,
                  xtol=XTOL,
                  ftol=FTOL,
                  gtol=GTOL,
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
-                 maxfun=MAXFUN,
-                 refscan=REFSCAN):
+                 maxfun=MAXFUN):
 
+        # Check arguments
+        check_type_and_shape(subsampling, int, 3)
+        check_type(refscan, int, accept_none=True)
+        check_type_and_shape(borders, int, 3)
+        check_type(xtol, float)
+        check_type(ftol, float)
+        check_type(gtol, float)
+        check_type(stepsize, float)
+        check_type(maxiter, int)
+        check_type(maxfun, int, accept_none=True)
+
+        # Get dimensional parameters
         self.dims = im4d.get_shape()
         self.nscans = self.dims[3]
+        # Reduce borders if spatial image dimension too small to avoid
+        # getting an empty volume of interest
+        borders = [min(b, d/2 - (not d%2)) for (b, d) in zip(borders, self.dims[0:3])]
         self.xyz = make_grid(self.dims[0:3], subsampling, borders)
         masksize = self.xyz.shape[0]
         self.data = np.zeros([masksize, self.nscans], dtype='double')
@@ -224,7 +228,7 @@ class Realign4dAlgorithm(object):
         # Initialize space/time transformation parameters
         self.affine = im4d.affine
         self.inv_affine = np.linalg.inv(self.affine)
-        if transforms == None:
+        if transforms is None:
             self.transforms = [affine_class() for scan in range(self.nscans)]
         else:
             self.transforms = transforms
@@ -244,8 +248,8 @@ class Realign4dAlgorithm(object):
         # The reference scan conventionally defines the head
         # coordinate system
         self.optimize_template = optimize_template
-        if not optimize_template and refscan == None:
-            self.refscan = REFSCAN
+        if not optimize_template and refscan is None:
+            self.refscan = 0
         else:
             self.refscan = refscan
 
@@ -280,17 +284,17 @@ class Realign4dAlgorithm(object):
             _cspline_sample4d(self.data[:, t],
                               self.cbspline,
                               X, Y, Z, T,
-                              mx=EXTRAPOLATE_SPACE,
-                              my=EXTRAPOLATE_SPACE,
-                              mz=EXTRAPOLATE_SPACE,
-                              mt=EXTRAPOLATE_TIME)
+                              mx='reflect',
+                              my='reflect',
+                              mz='reflect',
+                              mt='reflect')
         else:
             _cspline_sample3d(self.data[:, t],
                               self.cbspline[:, :, :, t],
                               X, Y, Z,
-                              mx=EXTRAPOLATE_SPACE,
-                              my=EXTRAPOLATE_SPACE,
-                              mz=EXTRAPOLATE_SPACE)
+                              mx='reflect',
+                              my='reflect',
+                              mz='reflect')
 
     def resample_full_data(self):
         if VERBOSE:
@@ -346,7 +350,7 @@ class Realign4dAlgorithm(object):
 
         V/V0 = [nV* + (x-m*)^2] / [nV0* + (x-m0*)^2]
         """
-        fixed = range(self.nscans)
+        fixed = list(range(self.nscans))
         fixed.remove(t)
         aux = self.data[:, fixed]
         if self.optimize_template:
@@ -477,7 +481,7 @@ class Realign4dAlgorithm(object):
         to right compose each head_average-to-scanner transform with
         the refscan's 'to head_average' transform.
         """
-        if self.refscan == None:
+        if self.refscan is None:
             return
         Tref_inv = self.transforms[self.refscan].inv()
         for t in range(self.nscans):
@@ -506,17 +510,17 @@ def adjust_subsampling(speedup, dims):
 def single_run_realign4d(im4d,
                          affine_class=Rigid,
                          time_interp=True,
-                         loops=LOOPS,
-                         speedup=SPEEDUP,
-                         borders=BORDERS,
-                         optimizer=OPTIMIZER,
+                         loops=5,
+                         speedup=5,
+                         refscan=0,
+                         borders=(1, 1, 1),
+                         optimizer='ncg',
                          xtol=XTOL,
                          ftol=FTOL,
                          gtol=GTOL,
                          stepsize=STEPSIZE,
                          maxiter=MAXITER,
-                         maxfun=MAXFUN,
-                         refscan=REFSCAN):
+                         maxfun=MAXFUN):
     """
     Realign a single run in space and time.
 
@@ -525,8 +529,7 @@ def single_run_realign4d(im4d,
     im4d : Image4d instance
 
     speedup : int or sequence
-      If a sequence, implement a multi-scale
-
+      If a sequence, implement a multi-scale realignment
     """
     if not type(loops) in (list, tuple, np.array):
         loops = [loops]
@@ -563,8 +566,8 @@ def single_run_realign4d(im4d,
                                affine_class=affine_class,
                                time_interp=time_interp,
                                subsampling=subsampling,
-                               borders=borders,
                                refscan=refscan,
+                               borders=borders,
                                optimizer=optimizer_,
                                xtol=xtol_,
                                ftol=ftol_,
@@ -587,22 +590,21 @@ def realign4d(runs,
               affine_class=Rigid,
               time_interp=True,
               align_runs=True,
-              loops=LOOPS,
-              between_loops=BETWEEN_LOOPS,
-              speedup=SPEEDUP,
-              borders=BORDERS,
-              optimizer=OPTIMIZER,
+              loops=5,
+              between_loops=5,
+              speedup=5,
+              refscan=0,
+              borders=(1, 1, 1),
+              optimizer='ncg',
               xtol=XTOL,
               ftol=FTOL,
               gtol=GTOL,
               stepsize=STEPSIZE,
               maxiter=MAXITER,
-              maxfun=MAXFUN,
-              refscan=REFSCAN):
+              maxfun=MAXFUN):
     """
     Parameters
     ----------
-
     runs : list of Image4d objects
 
     Returns
@@ -629,6 +631,7 @@ def realign4d(runs,
                                        time_interp=time_interp,
                                        loops=loops,
                                        speedup=speedup,
+                                       refscan=refscan,
                                        borders=borders,
                                        optimizer=optimizer,
                                        xtol=xtol,
@@ -636,8 +639,7 @@ def realign4d(runs,
                                        gtol=gtol,
                                        stepsize=stepsize,
                                        maxiter=maxiter,
-                                       maxfun=maxfun,
-                                       refscan=refscan) for run in runs]
+                                       maxfun=maxfun) for run in runs]
 
     if not align_runs:
         return transforms, transforms, None
@@ -728,7 +730,7 @@ class Realign4d(object):
         """
         Generic initialization method.
         """
-        if slice_times == None:
+        if slice_times is None:
             tr = 1.0
             slice_times = 0.0
             time_interp = False
@@ -736,7 +738,7 @@ class Realign4d(object):
             time_interp = True
         self.slice_times = slice_times
         self.tr = tr
-        if tr == None:
+        if tr is None:
             raise ValueError('Repetition time cannot be None')
         if not isinstance(images, (list, tuple, np.ndarray)):
             images = [images]
@@ -758,20 +760,89 @@ class Realign4d(object):
         self._time_interp = time_interp
 
     def estimate(self,
-                 loops=LOOPS,
+                 loops=5,
                  between_loops=None,
                  align_runs=True,
-                 speedup=SPEEDUP,
-                 borders=BORDERS,
-                 optimizer=OPTIMIZER,
+                 speedup=5,
+                 refscan=0,
+                 borders=(1, 1, 1),
+                 optimizer='ncg',
                  xtol=XTOL,
                  ftol=FTOL,
                  gtol=GTOL,
                  stepsize=STEPSIZE,
                  maxiter=MAXITER,
-                 maxfun=MAXFUN,
-                 refscan=REFSCAN):
-        if between_loops == None:
+                 maxfun=MAXFUN):
+        """Estimate motion parameters.
+
+        Parameters
+        ----------
+        loops : int or sequence of ints
+            Determines the number of iterations performed to realign
+            scans within each run for each pass defined by the
+            ``speedup`` argument. For instance, setting ``speedup`` ==
+            (5,2) and ``loops`` == (5,1) means that 5 iterations are
+            performed in a first pass where scans are subsampled by an
+            isotropic factor 5, followed by one iteration where scans
+            are subsampled by a factor 2.
+        between_loops : None, int or sequence of ints
+            Similar to ``loops`` for between-run motion
+            estimation. Determines the number of iterations used to
+            realign scans across runs, a procedure similar to
+            within-run realignment that uses the mean images from each
+            run. If None, assumed to be the same as ``loops``.
+            The setting used in the experiments described in Roche,
+            IEEE TMI 2011, was: ``speedup`` = (5, 2), ``loops`` = (5,
+            1) and ``between_loops`` = (5, 1).
+        align_runs : bool
+            Determines whether between-run motion is estimated or
+            not. If False, the ``between_loops`` argument is ignored.
+        speedup: int or sequence of ints
+            Determines an isotropic sub-sampling factor, or a sequence
+            of such factors, applied to the scans to perform motion
+            estimation. If a sequence, several estimation passes are
+            applied.
+        refscan : None or int
+            Defines the number of the scan used as the reference
+            coordinate system for each run. If None, a reference
+            coordinate system is defined internally that does not
+            correspond to any particular scan. Note that the
+            coordinate system associated with the first run is always
+        borders : sequence of ints
+            Should be of length 3. Determines the field of view for
+            motion estimation in terms of the number of slices at each
+            extremity of the reference grid that are ignored for
+            motion parameter estimation. For instance,
+            ``borders``==(1,1,1) means that the realignment cost
+            function will not take into account voxels located in the
+            first and last axial/sagittal/coronal slices in the
+            reference grid. Please note that this choice only affects
+            parameter estimation but does not affect image resampling
+            in any way, see ``resample`` method.
+        optimizer : str
+            Defines the optimization method. One of 'simplex',
+            'powell', 'cg', 'ncg', 'bfgs' and 'steepest'.
+        xtol : float
+            Tolerance on variations of transformation parameters to
+            test numerical convergence.
+        ftol : float
+            Tolerance on variations of the intensity comparison metric
+            to test numerical convergence.
+        gtol : float
+            Tolerance on the gradient of the intensity comparison
+            metric to test numerical convergence. Applicable to
+            optimizers 'cg', 'ncg', 'bfgs' and 'steepest'.
+        stepsize : float
+            Step size to approximate the gradient and Hessian of the
+            intensity comparison metric w.r.t. transformation
+            parameters. Applicable to optimizers 'cg', 'ncg', 'bfgs'
+            and 'steepest'.
+        maxiter : int
+            Maximum number of iterations in optimization.
+        maxfun : int 
+            Maximum number of function evaluations in maxfun.
+        """
+        if between_loops is None:
             between_loops = loops
         t = realign4d(self._runs,
                       affine_class=self.affine_class,
@@ -780,6 +851,7 @@ class Realign4d(object):
                       loops=loops,
                       between_loops=between_loops,
                       speedup=speedup,
+                      refscan=refscan,
                       borders=borders,
                       optimizer=optimizer,
                       xtol=xtol,
@@ -787,22 +859,21 @@ class Realign4d(object):
                       gtol=gtol,
                       stepsize=stepsize,
                       maxiter=maxiter,
-                      maxfun=maxfun,
-                      refscan=refscan)
+                      maxfun=maxfun)
         self._transforms, self._within_run_transforms,\
             self._mean_transforms = t
 
     def resample(self, r=None, align_runs=True):
         """
         Return the resampled run number r as a 4d nipy-like
-        image. Returns all runs as a list of images if r == None.
+        image. Returns all runs as a list of images if r is None.
         """
         if align_runs:
             transforms = self._transforms
         else:
             transforms = self._within_run_transforms
         runs = range(len(self._runs))
-        if r == None:
+        if r is None:
             data = [resample4d(self._runs[r], transforms=transforms[r],
                                time_interp=self._time_interp) for r in runs]
             return [make_xyz_image(data[r], self._runs[r].affine, 'scanner')
@@ -814,6 +885,7 @@ class Realign4d(object):
 
 
 class SpaceTimeRealign(Realign4d):
+
     def __init__(self, images, tr, slice_times, slice_info,
                  affine_class=Rigid):
         """ Spatiotemporal realignment class for fMRI series.
@@ -876,6 +948,7 @@ class SpaceTimeRealign(Realign4d):
 
 
 class SpaceRealign(Realign4d):
+
     def __init__(self, images, affine_class=Rigid):
         """ Spatial registration of time series with no time interpolation
 
@@ -1023,29 +1096,29 @@ class FmriRealign4d(Realign4d):
                       stacklevel=2)
         # if slice_times not None, make sure that parameters redundant
         # with slice times all have their default value
-        if slice_times != None:
-            if slice_order != None \
-                    or tr_slices != None\
+        if slice_times is not None:
+            if slice_order is not None \
+                    or tr_slices is not None\
                     or start != 0.0 \
-                    or time_interp != None\
-                    or interleaved != None:
+                    or time_interp is not None\
+                    or interleaved is not None:
                 raise ValueError('Attempting to set both `slice_times` '
                                  'and other arguments redundant with it')
-            if tr == None:
+            if tr is None:
                 if len(slice_times) > 1:
                     tr = slice_times[-1] + slice_times[1] - 2 * slice_times[0]
                 else:
                     tr = 2 * slice_times[0]
                 warnings.warn('No `tr` entered. Assuming regular acquisition'
                               ' with tr=%f' % tr)
-        # case where slice_time == None
+        # case where slice_time is None
         else:
             # assume regular slice acquisition, therefore tr is
             # arbitrary
-            if tr == None:
+            if tr is None:
                 tr = 1.0
             # if no slice order provided, assume synchronous slices
-            if slice_order == None:
+            if slice_order is None:
                 if not time_interp == False:
                     raise ValueError('Slice order is requested '
                                      'with time interpolation switched on')
@@ -1067,8 +1140,8 @@ class FmriRealign4d(Realign4d):
                                       'deprecated',
                                       FutureWarning,
                                       stacklevel=2)
-                        aux = np.argsort(range(0, nslices, 2) +\
-                                             range(1, nslices, 2))
+                        aux = np.argsort(list(range(0, nslices, 2)) +
+                                         list(range(1, nslices, 2)))
                     else:
                         aux = np.arange(nslices)
                     if slice_order == 'descending':
@@ -1079,13 +1152,13 @@ class FmriRealign4d(Realign4d):
                 else:
                     warnings.warn('Please make sure you are NOT using '
                                   'SPM-style slice order declaration')
-                    if not interleaved == None:
+                    if interleaved is not None:
                         raise ValueError('`interleaved` should be None when '
                                          'providing explicit slice order')
                     slice_order = np.asarray(slice_order)
-                if tr_slices == None:
+                if tr_slices is None:
                     tr_slices = float(tr) / float(len(slice_order))
-                if start == None:
+                if start is None:
                     start = 0.0
                 slice_times = start + tr_slices * slice_order
 

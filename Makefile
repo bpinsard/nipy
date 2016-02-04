@@ -1,6 +1,11 @@
 # Automating common tasks for NIPY development
 
 PYTHON = python
+HTML_DIR = doc/build/html
+LATEX_DIR = doc/build/latex
+WWW_DIR = doc/dist
+DOCSRC_DIR = doc
+PROJECT = nipy
 
 clean-pyc:
 	find . -regex ".*\.pyc" -exec rm -rf "{}" \;
@@ -50,9 +55,8 @@ cythonize:
 bdist_rpm:
 	$(PYTHON) setup.py bdist_rpm \
 	  --doc-files "doc" \
-	  --packager "nipy authors <http://mail.scipy.org/mailman/listinfo/nipy-devel>"
-	  --vendor "nipy authors <http://mail.scipy.org/mailman/listinfo/nipy-devel>"
-
+	  --packager "nipy authors <https://mail.python.org/mailman/listinfo/neuroimaging>"
+	  --vendor "nipy authors <https://mail.python.org/mailman/listinfo/neuroimaging>"
 
 # build MacOS installer -- depends on patched bdist_mpkg for Leopard
 bdist_mpkg:
@@ -103,7 +107,38 @@ tox-stale:
 
 recythonize:
 	# Recythonize all pyx files
-	find . -name "*.pyx" -exec cython -I libcstat/wrapper {} \;
+	find . -name "*.pyx" -exec cython -I libcstat/wrapper -I lib/fff_python_wrapper {} \;
+
+# Website stuff
+$(WWW_DIR):
+	if [ ! -d $(WWW_DIR) ]; then mkdir -p $(WWW_DIR); fi
+
+htmldoc: build
+	cd $(DOCSRC_DIR) && PYTHONPATH=$(CURDIR):$(PYTHONPATH) $(MAKE) html
+
+pdfdoc: build
+	cd $(DOCSRC_DIR) && PYTHONPATH=$(CURDIR):$(PYTHONPATH) $(MAKE) latex
+	cd $(LATEX_DIR) && $(MAKE) all-pdf
+
+html: html-stamp
+html-stamp: $(WWW_DIR) htmldoc
+	cp -r $(HTML_DIR)/* $(WWW_DIR)
+	touch $@
+
+pdf: pdf-stamp
+pdf-stamp: $(WWW_DIR) pdfdoc
+	cp $(LATEX_DIR)/*.pdf $(WWW_DIR)
+	touch $@
+
+website: website-stamp
+website-stamp: $(WWW_DIR) html-stamp pdf-stamp
+	cp -r $(HTML_DIR)/* $(WWW_DIR)
+	touch $@
+
+upload-html: html-stamp
+	./tools/upload-gh-pages.sh $(WWW_DIR) $(PROJECT)
+
+refresh-readme:
+	$(PYTHON) tools/refresh_readme.py nipy
 
 .PHONY: orig-src pylint
-

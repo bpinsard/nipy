@@ -1,6 +1,7 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 ''' Diagnostic 4d image screen '''
+from __future__ import absolute_import
 from os.path import join as pjoin
 
 import warnings
@@ -135,7 +136,8 @@ def write_screen_res(res, out_path, out_root,
                                              out_img_ext))
         save_image(res[key], fname)
     # plot, save component time courses and some tsdiffana stuff
-    ncomp = res['pca_res']['axis']
+    pca_axis = res['pca_res']['axis']
+    n_comp = res['pca_res']['basis_projections'].shape[pca_axis]
     vectors = res['pca_res']['basis_vectors']
     pcnt_var = res['pca_res']['pcnt_var']
     np.savez(pjoin(out_path, 'vectors_components_%s.npz' % out_root),
@@ -145,8 +147,8 @@ def write_screen_res(res, out_path, out_root,
              slice_mean_diff2=res['ts_res']['slice_mean_diff2'],
             )
     plt.figure()
-    for c in range(ncomp):
-        plt.subplot(ncomp, 1, c+1)
+    for c in range(n_comp):
+        plt.subplot(n_comp, 1, c+1)
         plt.plot(vectors[:,c])
         plt.axis('tight')
     plt.suptitle(out_root + ': PCA basis vectors')

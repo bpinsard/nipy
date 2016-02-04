@@ -1,6 +1,7 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """Tests for the temporary matlab file module."""
+from __future__ import absolute_import
 
 # Stdlib imports
 import os
@@ -15,7 +16,7 @@ def check_mlab_tempfile(dir):
 
     try:
         f = mlab_tempfile(dir)
-    except OSError,msg:
+    except OSError as msg:
         if not os.path.isdir(dir) and 'No such file or directory' in msg:
             # This is OK, it's the expected error
             return True
