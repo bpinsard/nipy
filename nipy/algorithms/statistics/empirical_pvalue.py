@@ -21,6 +21,8 @@ It implements 3 approaches:
 
 Author : Bertrand Thirion, Yaroslav Halchenko, 2008-2012
 """
+from __future__ import print_function
+from __future__ import absolute_import
 
 import numpy as np
 from numpy.linalg import pinv
@@ -190,9 +192,9 @@ class NormalEmpiricalNull(object):
 
         * mu = mu
         * p0 = min(1, np.exp(lp0))
-        * sqsigma: standard deviation of the estimated normal
+        * sqsigma: variance of the estimated normal
           distribution
-        * sigma: np.sqrt(sqsigma) : variance of the estimated
+        * sigma: np.sqrt(sqsigma) : standard deviation of the estimated
           normal distribution
         """
         # take a central subsample of x
@@ -200,7 +202,7 @@ class NormalEmpiricalNull(object):
 
         # generate the histogram
         step = 3.5 * np.std(self.x) / np.exp(np.log(self.n) / 3)
-        bins = max(10, (self.x.max() - self.x.min()) / step)
+        bins = max(10, (self.x.max() - self.x.min()) // step)
         hist, ledge = np.histogram(x, bins=bins)
         step = ledge[1] - ledge[0]
         medge = ledge + 0.5 * step
@@ -262,8 +264,8 @@ class NormalEmpiricalNull(object):
             self.plot(efp, alpha)
 
         if efp[-1] > alpha:
-            print "the maximal value is %f , the corresponding FDR is %f " \
-                    % (self.x[ - 1], efp[ - 1])
+            print("the maximal value is %f , the corresponding FDR is %f "
+                  % (self.x[ - 1], efp[ - 1]))
             return np.inf
         j = np.argmin(efp[:: - 1] < alpha) + 1
         return 0.5 * (self.x[ - j] + self.x[ - j + 1])
@@ -355,7 +357,7 @@ class NormalEmpiricalNull(object):
         hist /= step
 
         import matplotlib.pylab as mp
-        if mpaxes == None:
+        if mpaxes is None:
             mp.figure()
             ax = mp.subplot(1, 1, 1)
         else:
@@ -374,7 +376,7 @@ class NormalEmpiricalNull(object):
         ax.set_xticklabels(ax.get_xticks(), fontsize=12)
         ax.set_yticklabels(ax.get_yticks(), fontsize=12)
 
-        if efp != None:
+        if efp is not None:
             ax.plot(self.x, np.minimum(alpha, efp), 'k')
 
 
@@ -437,7 +439,7 @@ def three_classes_GMM_fit(x, test=None, alpha=0.01, prior_strength=100,
 
     nvox = np.size(x)
     x = np.reshape(x, (nvox, 1))
-    if test == None:
+    if test is None:
         test = x
     if np.size(test) == 0:
         return None
@@ -550,16 +552,15 @@ def gamma_gaussian_fit(x, test=None, verbose=0, mpaxes=False,
 
 
 def smoothed_histogram_from_samples(x, bins=None, nbins=256, normalized=False):
-    """Returns the smooth histogram corresponding to the  density
-    underlying the samples in x
+    """ Smooth histogram corresponding to density underlying the samples in `x`
 
     Parameters
     ----------
-    x: array of shape(n_samples),
+    x: array of shape(n_samples)
        input data
-    bins: array of shape(nbins+1), optional,
+    bins: array of shape(nbins+1), optional
        the bins location
-    nbins: int, optional,
+    nbins: int, optional
        the number of bins of the resulting histogram
     normalized: bool, optional
        if True, the result is returned as a density value

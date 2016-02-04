@@ -6,6 +6,7 @@ General utilities for code support.
 These are modules that we (broadly-speaking) wrote; packages that other people
 wrote, that we ship, go in the nipy.externals tree.
 """
+from __future__ import absolute_import
 
 from nibabel.data import make_datasource, DataError, datasource_or_bomber
 
@@ -27,6 +28,8 @@ except DataError:
     HAVE_TEMPLATES = False
 else:
     HAVE_TEMPLATES = True
+
+from .utilities import is_iterable, is_numlike
 
 from nipy.testing import Tester
 test = Tester().test

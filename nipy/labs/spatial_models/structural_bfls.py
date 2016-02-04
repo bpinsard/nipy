@@ -12,6 +12,8 @@ Group Studies.  IEEE TMI 2007
 
 Author : Bertrand Thirion, 2006-2013
 """
+from __future__ import print_function
+from __future__ import absolute_import
 
 #autoindent
 
@@ -93,9 +95,9 @@ class LandmarkRegions(object):
              the density sampled at the coords
         """
         from nipy.algorithms.utils.fast_distance import euclidean_distance
-        if coord == None:
+        if coord is None:
             coord = self.domain.coord
-        if k == None:
+        if k is None:
             kde = np.zeros(coord.shape[0])
             for k in range(self.k):
                 pos = self.position[k]
@@ -125,7 +127,7 @@ class LandmarkRegions(object):
         -------
         label: array of shape (n): the posterior labelling
         """
-        if coord == None:
+        if coord is None:
             coord = self.domain.coord
         label = - np.ones(coord.shape[0])
         null_density = 1. / self.domain.local_volume.sum()
@@ -146,9 +148,9 @@ class LandmarkRegions(object):
         centers = self.centers()
         subjects = self.subjects
         prevalence = self.roi_prevalence()
-        print "index", "prevalence", "mean_position", "individuals"
+        print("index", "prevalence", "mean_position", "individuals")
         for i in range(self.k):
-            print i, prevalence[i], centers[i], np.unique(subjects[i])
+            print(i, prevalence[i], centers[i], np.unique(subjects[i]))
 
     def roi_prevalence(self):
         """ Return a confidence index over the different rois

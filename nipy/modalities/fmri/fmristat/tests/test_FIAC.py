@@ -8,6 +8,7 @@ Taylor, J.E. & Worsley, K.J. (2005). \'Inference for
     magnitudes and delays of responses in the FIAC data using 
     BRAINSTAT/FMRISTAT\'. Human Brain Mapping, 27,434-441
 """
+from __future__ import absolute_import
 
 import numpy as np
 
@@ -86,7 +87,7 @@ def protocol(recarr, design_type, *hrfs):
             term_name = '%s%d' % (to_str(v), l)
             termdict[term_name] = utils.define(term_name,
                                                utils.events(times[k], f=h))
-    f = formulae.Formula(termdict.values())
+    f = formulae.Formula(list(termdict.values()))
     Tcontrasts = {}
     Tcontrasts['average'] = (termdict['SSt_SSp0'] + termdict['SSt_DSp0'] +
                              termdict['DSt_SSp0'] + termdict['DSt_DSp0']) / 4.
@@ -98,7 +99,7 @@ def protocol(recarr, design_type, *hrfs):
                                  termdict['DSt_SSp0'] + termdict['DSt_DSp0'])
     # Ftest
     Fcontrasts = {}
-    Fcontrasts['overall1'] = formulae.Formula(Tcontrasts.values())
+    Fcontrasts['overall1'] = formulae.Formula(list(Tcontrasts.values()))
 
     return f, Tcontrasts, Fcontrasts
 
@@ -174,7 +175,7 @@ def altprotocol(d, design_type, *hrfs):
             # speaker1(t)
             termdict['%s%d' % (key, l)] = utils.define("%s%d" % (key, l), symb)
 
-    f = formulae.Formula(termdict.values())
+    f = formulae.Formula(list(termdict.values()))
 
     Tcontrasts = {}
     Tcontrasts['average'] = termdict['average0']
@@ -185,7 +186,7 @@ def altprotocol(d, design_type, *hrfs):
     # F tests
 
     Fcontrasts = {}
-    Fcontrasts['overall1'] = formulae.Formula(Tcontrasts.values())
+    Fcontrasts['overall1'] = formulae.Formula(list(Tcontrasts.values()))
 
     nhrf = len(hrfs)
     Fcontrasts['averageF'] = formulae.Formula([termdict['average%d' % j] for j in range(nhrf)])

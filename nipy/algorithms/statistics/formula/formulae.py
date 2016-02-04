@@ -109,6 +109,8 @@ array([(51.0, 39.0, 1989.0, 1.0), (64.0, 54.0, 3456.0, 1.0),
        (85.0, 71.0, 6035.0, 1.0), (82.0, 59.0, 4838.0, 1.0)], 
       dtype=[('x1', '<f8'), ('x3', '<f8'), ('x1*x3', '<f8'), ('1', '<f8')])
 '''
+from __future__ import print_function
+from __future__ import absolute_import
 
 from string import ascii_letters, digits
 
@@ -169,7 +171,7 @@ class Term(sympy.Symbol):
     >>> xval = np.array([(3,),(4,),(5,)], np.dtype([('x', np.float)]))
     >>> f = t.formula
     >>> d = f.design(xval)
-    >>> print d.dtype.descr
+    >>> print(d.dtype.descr)
     [('x', '<f8')]
     >>> f.design(xval, return_float=True)
     array([ 3.,  4.,  5.])
@@ -180,13 +182,13 @@ class Term(sympy.Symbol):
 
     def _getformula(self):
         return Formula([self])
-    formula = property(_getformula, doc="Return a Formula with only terms=[self].")
+    formula = property(_getformula,
+                       doc="Return a Formula with only terms=[self].")
 
     def __add__(self, other):
         if self == other:
             return self
-        else:
-            return sympy.Symbol.__add__(self, other)
+        return sympy.Symbol.__add__(self, other)
 
 
 # time symbol
@@ -333,30 +335,32 @@ def getterms(expression):
 def make_recarray(rows, names, dtypes=None):
     """ Create recarray from `rows` with field names `names`
 
-    Create a recarray with named columns from a list of rows and names
-    for the columns. If dtype is None, the dtype is based on rows if it
-    is an np.ndarray, else the data is cast as np.float. If dtypes are
-    supplied, it uses the dtypes to create a np.dtype unless rows is an
-    np.ndarray, in which case dtypes are ignored
+    Create a recarray with named columns from a list or ndarray of `rows` and
+    sequence of `names` for the columns. If `rows` is an ndarray, `dtypes` must
+    be None, otherwise we raise a ValueError. Otherwise, if `dtypes` is None,
+    we cast the data in all columns in `rows` as np.float. If `dtypes` is not
+    None, the routine uses `dtypes` as a dtype specifier for the output
+    structured array.
 
     Parameters
     ----------
-    rows: array-like
+    rows: list or array
         Rows that will be turned into an recarray.
     names: sequence
         Sequence of strings - names for the columns.
-    dtypes: [str or np.dtype]
-        Used to create a np.dtype, can be np.dtypes or string.
+    dtypes: None or sequence of str or sequence of np.dtype
+        Used to create a np.dtype, can be sequence of np.dtype or string.
 
     Returns
     -------
     v : np.ndarray
+        Structured array with field names given by `names`.
 
     Examples
     --------
-    The following tests depend on machine byte order to pass
+    The following tests depend on machine byte order for their exact output.
 
-    >>> arr = np.array([[3,4 ], [4, 6], [6, 8]])
+    >>> arr = np.array([[3, 4], [4, 6], [6, 8]])
     >>> make_recarray(arr, ['x', 'y']) #doctest: +ELLIPSIS
     array([[(3, 4)],
            [(4, 6)],
@@ -416,10 +420,10 @@ class Formula(object):
     model being the sum of each term multiplied by a linear regression
     coefficient.
 
-    The expressions may depend on additional Symbol instances,
-    giving a non-linear regression model.
+    The expressions may depend on additional Symbol instances, giving a
+    non-linear regression model.
     """
-    # This flag is defined to avoid using isinstance
+    # This flag is defined for test isformula(obj) instead of isinstance
     _formula_flag = True
 
     def __init__(self, seq, char = 'b'):
@@ -478,7 +482,7 @@ class Formula(object):
     dtype = property(_getdtype, doc='The dtype of the design matrix of the Formula.')
 
     def __repr__(self):
-        return """Formula(%s)""" % `list(self.terms)`
+        return "Formula(%r)" % (list(self.terms),)
 
     def __getitem__(self, key):
         """ Return the term such that str(term) == key.
@@ -526,7 +530,7 @@ class Formula(object):
         if keep:
             return np.sum([t for n, t in f.items() if n in keep])
         else:
-            return np.sum(f.values())
+            return np.sum(list(f.values()))
 
     def subs(self, old, new):
         """ Perform a sympy substitution on all terms in the Formula
@@ -558,10 +562,20 @@ class Formula(object):
         return self.__class__([term.subs(old, new) for term in self.terms])
 
     def __add__(self, other):
-        """
-        Create a new Formula by combining terms
-        of other with those of self.
+        """ New Formula combining terms of `self` with those of `other`.
 
+        Parameters
+        ----------
+        other : Formula instance
+            Object for which ``is_formula(other)`` is True
+
+        Returns
+        -------
+        added : Formula instance
+            Formula combining terms of `self` with terms of `other`
+
+        Examples
+        --------
         >>> x, y, z = [Term(l) for l in 'xyz']
         >>> f1 = Formula([x,y,z])
         >>> f2 = Formula([y])+I
@@ -575,33 +589,51 @@ class Formula(object):
         """
         if not is_formula(other):
             raise ValueError('only Formula objects can be added to a Formula')
-        f = self.__class__(np.hstack([self.terms, other.terms]))
+        f = Formula(np.hstack([self.terms, other.terms]))
         return f
 
     def __sub__(self, other):
-        """
-        Create a new Formula by deleting terms in other
-        from self. No exceptions are raised for terms in other that do not appear in
-        self.
+        """ New Formula by deleting terms in `other` from those in `self`
 
+        Create and return a new Formula by deleting terms in `other` from those
+        in `self`.
+
+        No exceptions are raised for terms in `other` that do not appear in
+        `self`.
+
+        Parameters
+        ----------
+        other : Formula instance
+            Object for which ``is_formula(other)`` is True
+
+        Returns
+        -------
+        subbed : Formula instance
+            Formula with terms of `other` removed from terms of `self`
+
+        Examples
+        --------
         >>> x, y, z = [Term(l) for l in 'xyz']
-        >>> f1 = Formula([x,y,z])
-        >>> f2 = Formula([y])+I
+        >>> f1 = Formula([x, y, z])
+        >>> f2 = Formula([y]) + I
         >>> f1.mean
         _b0*x + _b1*y + _b2*z
         >>> f2.mean
         _b0*y + _b1
-        >>> f3=f2-f1
+        >>> f3 = f2 - f1
         >>> f3.mean
         _b0
-        >>> f4=f1-f2
+        >>> f4 = f1 - f2
         >>> f4.mean
         _b0*x + _b1*z
         """
         if not is_formula(other):
-            raise ValueError('only Formula objects can be subtracted from a Formula')
-        d = list(set(self.terms).difference(other.terms))
-        return self.__class__(d)
+            raise ValueError(
+                'only Formula objects can be subtracted from a Formula')
+        # Preserve order of terms in subtraction
+        unwanted = set(other.terms)
+        d = [term for term in self.terms if term not in unwanted]
+        return Formula(d)
 
     def __array__(self):
         return self.terms
@@ -638,11 +670,11 @@ class Formula(object):
         return np.alltrue(np.equal(np.array(self), np.array(other)))
 
     def _setup_design(self):
-        """
-        Create a callable object to evaluate the design matrix
-        at a given set of parameter values to be specified by
-        a recarray and observed Term values, also specified
-        by a recarray.
+        """ Initialize design
+
+        Create a callable object to evaluate the design matrix at a given set
+        of parameter values to be specified by a recarray and observed Term
+        values, also specified by a recarray.
         """
         # the design expression is the differentiation of the expression
         # for the mean.  It is a list
@@ -770,14 +802,14 @@ class Formula(object):
         # The input to design should have field names for all fields in self._dtypes['preterm']
         if not set(preterm_recarray.dtype.names).issuperset(self._dtypes['preterm'].names):
             raise ValueError("for term, expecting a recarray with "
-                             "dtype having the following names: %s"
-                             % `self._dtypes['preterm'].names`)
+                             "dtype having the following names: %r"
+                             % (self._dtypes['preterm'].names,))
         # The parameters should have field names for all fields in self._dtypes['param']
         if param_recarray is not None:
             if not set(param_recarray.dtype.names).issuperset(self._dtypes['param'].names):
                 raise ValueError("for param, expecting a recarray with "
-                                 "dtype having the following names: %s"
-                                 % `self._dtypes['param'].names`)
+                                 "dtype having the following names: %r"
+                                 % (self._dtypes['param'].names,))
         # If the only term is an intercept,
         # the return value is a matrix of 1's.
         if list(self.terms) == [sympy.Number(1)]:
@@ -913,7 +945,7 @@ def natural_spline(t, knots=None, order=3, intercept=False):
            [   5.,   25.,  125.,   64.,    8.,    1.],
            [   7.,   49.,  343.,  216.,   64.,   27.]])
     >>> d = n.design(xval)
-    >>> print d.dtype.descr
+    >>> print(d.dtype.descr)
     [('ns_1(x)', '<f8'), ('ns_2(x)', '<f8'), ('ns_3(x)', '<f8'), ('ns_4(x)', '<f8'), ('ns_5(x)', '<f8'), ('ns_6(x)', '<f8')]
     """
     if knots is None:
@@ -955,16 +987,15 @@ class Factor(Formula):
     _factor_flag = True
 
     def __init__(self, name, levels, char='b'):
-        """
+        """ Initialize Factor
+
         Parameters
         ----------
         name : str
         levels : [str or int]
             A sequence of strings or ints.
-        char : str
-
-        Returns
-        -------
+        char : str, optional
+            prefix character for regression coefficients
         """
         # Check whether they can all be cast to strings or ints without
         # loss.
@@ -1005,9 +1036,9 @@ class Factor(Formula):
 
         Parameters
         ----------
-        variable : str or a simple sympy expression whose string representation
-            are all lower or upper case letters, i.e. it can be interpreted
-            as a name
+        variable : str or simple sympy expression
+            If sympy expression, then string representation must be all lower
+            or upper case letters, i.e. it can be interpreted as a name.
 
         Returns
         -------
@@ -1039,13 +1070,11 @@ class Factor(Formula):
         ----------
         col : ndarray
             an array with ndim==1
-
         name : str
             name of the Factor
 
         Returns
         -------
-
         factor : Factor
 
         Examples
@@ -1054,10 +1083,10 @@ class Factor(Formula):
         >>> f1 = Factor.fromcol(data['y'], 'y')
         >>> f2 = Factor.fromcol(data['x'], 'x')
         >>> d = f1.design(data)
-        >>> print d.dtype.descr
+        >>> print(d.dtype.descr)
         [('y_a', '<f8'), ('y_b', '<f8')]
         >>> d = f2.design(data)
-        >>> print d.dtype.descr
+        >>> print(d.dtype.descr)
         [('x_3', '<f8'), ('x_4', '<f8'), ('x_5', '<f8')]
         """
         col = np.asarray(col)
@@ -1195,7 +1224,7 @@ class RandomEffects(Formula):
         if self.sigma.shape != (q,q):
             raise ValueError('incorrect shape for covariance '
                              'of random effects, '
-                             'should have shape %s' % repr(q,q))
+                             'should have shape %r' % ((q,q)))
         self.char = char
 
     def cov(self, term, param=None):

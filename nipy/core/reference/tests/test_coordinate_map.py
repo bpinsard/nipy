@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 from copy import copy
@@ -546,7 +547,7 @@ def test_as_coordinate_map():
     aff = AffineTransform(ijk, xyz, A)
     _cmapA = _as_coordinate_map(aff)
     yield assert_true, isinstance(_cmapA, CoordinateMap)
-    yield assert_true, _cmapA.inverse_function != None
+    yield assert_true, _cmapA.inverse_function is not None
 
     # a non-invertible one
 
@@ -556,7 +557,7 @@ def test_as_coordinate_map():
     _cmapB = _as_coordinate_map(affB)
 
     yield assert_true, isinstance(_cmapB, CoordinateMap)
-    yield assert_true, _cmapB.inverse_function == None
+    yield assert_true, _cmapB.inverse_function is None
 
 
 def test_cm__setattr__raise_error():
@@ -880,7 +881,7 @@ def test_make_cmap():
     # Making with generic functions and with affines
     xform = lambda x : x+1
     inv_xform = lambda x : x-1
-    diag_vals = range(2,8)
+    diag_vals = list(range(2,8))
     for i in range(1, 6):
         dcs = CS(d_names[:i], 'voxels')
         rcs = CS(r_names[:i], 'world')

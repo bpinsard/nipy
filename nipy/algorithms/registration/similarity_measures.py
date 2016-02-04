@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 from ._registration import _L1_moments
 
 import numpy as np
@@ -50,9 +51,9 @@ def dist2loss(q, qI=None, qJ=None):
     inference, 2001.
     """
     qT = q.T
-    if qI == None:
+    if qI is None:
         qI = q.sum(0)
-    if qJ == None:
+    if qJ is None:
         qJ = q.sum(1)
     q /= nonzero(qI)
     qT /= nonzero(qJ)
@@ -67,7 +68,10 @@ class SimilarityMeasure(object):
         self.shape = shape
         self.J, self.I = np.indices(shape)
         self.renormalize = renormalize
-        self.dist = dist
+        if dist is None:
+            self.dist = None
+        else:
+            self.dist = dist.copy()
 
     def loss(self, H):
         return np.zeros(H.shape)
@@ -88,6 +92,10 @@ class SupervisedLikelihoodRatio(SimilarityMeasure):
     """
     def loss(self, H):
         if not hasattr(self, 'L'):
+            if self.dist is None:
+                raise ValueError('SupervisedLikelihoodRatio: dist attribute cannot be None')
+            if not self.dist.shape == H.shape:
+                raise ValueError('SupervisedLikelihoodRatio: wrong shape for dist attribute')
             self.L = dist2loss(self.dist)
         return self.L
 

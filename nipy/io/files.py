@@ -10,6 +10,7 @@ Examples
 --------
 See documentation for load and save functions for worked examples.
 """
+from __future__ import absolute_import
 
 import os
 
@@ -23,6 +24,7 @@ from ..core.image.image import is_image
 from .nifti_ref import (nipy2nifti, nifti2nipy)
 from .nibcompat import get_dataobj, get_affine, get_header
 
+from ..externals.six import string_types
 
 def load(filename):
     """Load an image from the given filename.
@@ -131,7 +133,7 @@ def save(img, filename, dtype_from='data'):
     * SPM Analyze : ['.img', '.img.gz']
     """
     # Try and get nifti
-    dt_from_is_str = isinstance(dtype_from, basestring)
+    dt_from_is_str = isinstance(dtype_from, string_types)
     if dt_from_is_str and dtype_from == 'header':
         # All done
         io_dtype = None
@@ -225,6 +227,6 @@ def as_image(image_input):
     '''
     if is_image(image_input):
         return image_input
-    if isinstance(image_input, basestring):
+    if isinstance(image_input, string_types):
         return load(image_input)
     raise TypeError('Expecting an image-like object or filename string')

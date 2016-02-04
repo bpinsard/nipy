@@ -14,6 +14,9 @@ but it is limited to diagonal covariance models
 
 Author : Bertrand Thirion, 2008-2011
 """
+from __future__ import print_function
+from __future__ import absolute_import
+
 import numpy as np
 import numpy.random as nr
 from scipy.linalg import inv, cholesky, eigvalsh
@@ -21,7 +24,7 @@ from scipy.special import gammaln
 import math
 
 from .utils import kmeans
-from gmm import GMM
+from .gmm import GMM
 
 ##################################################################
 # ancillary functions ############################################
@@ -133,11 +136,11 @@ def wishart_eval(n, V, W, dV=None, dW=None, piV=None):
     """
     # check that shape(V)==shape(W)
     p = V.shape[0]
-    if dV == None:
+    if dV is None:
         dV = detsh(V)
-    if dW == None:
+    if dW is None:
         dW = detsh(W)
-    if piV == None:
+    if piV is None:
         piV = inv(V)
     ldW = math.log(dW) * (n - p - 1) / 2
     ltr = - np.trace(np.dot(piV, W)) / 2
@@ -165,7 +168,7 @@ def normal_eval(mu, P, x, dP=None):
     (float) the density
     """
     dim = P.shape[0]
-    if dP == None:
+    if dP is None:
         dP = detsh(P)
 
     w0 = math.log(dP) - dim * math.log(2 * math.pi)
@@ -391,13 +394,13 @@ class BGMM(GMM):
         self.shrinkage = shrinkage
         self.dof = dof
 
-        if self.shrinkage == None:
+        if self.shrinkage is None:
             self.shrinkage = np.ones(self.k)
 
-        if self.dof == None:
+        if self.dof is None:
             self.dof = np.ones(self.k)
 
-        if self.precisions != None:
+        if self.precisions is not None:
             self._detp = [detsh(self.precisions[k]) for k in range(self.k)]
 
     def check(self):
@@ -760,7 +763,7 @@ class BGMM(GMM):
         weights = pop + self.prior_weights
 
         # initialize the porsterior proba
-        if perm == None:
+        if perm is None:
             pp = dirichlet_eval(self.weights, weights)
         else:
             pp = np.array([dirichlet_eval(self.weights[pj], weights)
@@ -786,7 +789,7 @@ class BGMM(GMM):
             means /= shrinkage[k]
 
             #4. update the posteriors
-            if perm == None:
+            if perm is None:
                 pp *= wishart_eval(
                     dof[k], scale, self.precisions[k],
                     dV=_dets, dW=self._detp[k], piV=covariance)
@@ -798,7 +801,7 @@ class BGMM(GMM):
 
             mp = scale * shrinkage[k]
             _dP = _dets * shrinkage[k] ** self.dim
-            if perm == None:
+            if perm is None:
                 pp *= normal_eval(means, mp, self.means[k], dP=_dP)
             else:
                 for j, pj in enumerate(perm):
@@ -862,7 +865,7 @@ class BGMM(GMM):
         bf = np.log(p0) + np.sum(np.log(np.sum(like, 1))) - np.log(mp)
 
         if verbose:
-            print np.log(p0), np.sum(np.log(np.sum(like, 1))), np.log(mp)
+            print(np.log(p0), np.sum(np.log(np.sum(like, 1))), np.log(mp))
         return bf
 
 
@@ -938,7 +941,7 @@ class VBGMM(BGMM):
         from scipy.special import psi
         from numpy.linalg import inv
         tiny = 1.e-15
-        if like == None:
+        if like is None:
             like = self._Estep(x)
             like = (like.T / np.maximum(like.sum(1), tiny)).T
 
@@ -981,7 +984,7 @@ class VBGMM(BGMM):
             Dklg += dkl_gaussian(self.means[k], nc, self.prior_means[k], nc0)
         Dkl = Dkld + Dklg + Dklw
         if verbose:
-            print 'Lav', F, 'Dkl', Dkld, Dklg, Dklw
+            print('Lav', F, 'Dkl', Dkld, Dklg, Dklw)
         F -= Dkl
         return F
 
@@ -1065,7 +1068,7 @@ class VBGMM(BGMM):
         z: array of shape(nb_samples): the resulting MAP labelling
            of the rows of x
         """
-        if like == None:
+        if like is None:
             like = self.likelihood(x)
         z = np.argmax(like, 1)
         return z
@@ -1093,13 +1096,13 @@ class VBGMM(BGMM):
             av_ll = np.mean(np.log(np.maximum(np.sum(like, 1), tiny)))
             if av_ll < av_ll_old + delta:
                 if verbose:
-                    print 'iteration:', i, 'log-likelihood:', av_ll,\
-                          'old value:', av_ll_old
+                    print('iteration:', i, 'log-likelihood:', av_ll,
+                          'old value:', av_ll_old)
                 break
             else:
                 av_ll_old = av_ll
             if verbose:
-                print i, av_ll, self.bic(like)
+                print(i, av_ll, self.bic(like))
             like = (like.T / np.maximum(like.sum(1), tiny)).T
             self._Mstep(x, like)
 

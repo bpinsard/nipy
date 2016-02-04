@@ -1,3 +1,6 @@
+from __future__ import print_function
+from __future__ import absolute_import
+
 import numpy as np
 from ..forest import  Forest
 
@@ -63,7 +66,7 @@ def test_all_distances():
     """
     f =  simple_forest()
     dg = f.all_distances()
-    print dg
+    print(dg)
     assert dg[0, 3] == 3.
     assert dg.max() == 3.
     assert dg.min() == 0.

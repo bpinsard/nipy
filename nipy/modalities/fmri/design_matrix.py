@@ -1,6 +1,5 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-from __future__ import with_statement
 """
 This module implements fMRI Design Matrix creation.
 
@@ -23,6 +22,8 @@ Design matrices contain three different types of regressors:
 
 Author: Bertrand Thirion, 2009-2011
 """
+from __future__ import absolute_import
+
 import numpy as np
 
 from warnings import warn
@@ -61,28 +62,38 @@ def _poly_drift(order, frametimes):
     return pol
 
 
-def _cosine_drift(hfcut, frametimes):
-    """Create a cosine drift matrix
+def _cosine_drift(period_cut, frametimes):
+    """Create a cosine drift matrix with periods greater or equals to period_cut
 
     Parameters
     ----------
-    hfcut, float , cut frequency of the low-pass filter
-    frametimes: array of shape(nscans): the sampling time
+    period_cut: float 
+         Cut period of the low-pass filter (in sec)
+    frametimes: array of shape(nscans)
+         The sampling times (in sec)
 
     Returns
     -------
     cdrift:  array of shape(n_scans, n_drifts)
-             polynomial drifts plus a constant regressor
+             cosin drifts plus a constant regressor at cdrift[:,0]
+
+    Ref: http://en.wikipedia.org/wiki/Discrete_cosine_transform DCT-II
     """
-    tmax = float(frametimes.max())
-    tsteps = len(frametimes)
-    order = int(np.floor(2 * float(tmax) / float(hfcut)) + 1)
-    cdrift = np.zeros((tsteps, order))
+    len_tim = len(frametimes)
+    n_times = np.arange(len_tim)
+    hfcut = 1./ period_cut # input parameter is the period  
+
+    dt = frametimes[1] - frametimes[0] # frametimes.max() should be (len_tim-1)*dt    
+    order = int(np.floor(2*len_tim*hfcut*dt)) # s.t. hfcut = 1/(2*dt) yields len_tim
+    cdrift = np.zeros((len_tim, order))
+    nfct = np.sqrt(2.0/len_tim)
+    
     for k in range(1, order):
-        cdrift[:, k - 1] = np.sqrt(2.0 / tmax) * np.cos(
-            np.pi * (frametimes / tmax + 0.5 / tsteps) * k)
-    cdrift[:, order - 1] = np.ones_like(frametimes)
+        cdrift[:,k-1] = nfct * np.cos((np.pi/len_tim)*(n_times + .5)*k)
+    
+    cdrift[:,order-1] = 1. # or 1./sqrt(len_tim) to normalize
     return cdrift
+
 
 
 def _blank_drift(frametimes):
@@ -188,7 +199,7 @@ def _convolve_regressors(paradigm, hrf_model, frametimes, fir_delays=[0],
             fir_delays=fir_delays, oversampling=oversampling,
             min_onset=min_onset)
         hnames += names
-        if rmatrix == None:
+        if rmatrix is None:
             rmatrix = reg
         else:
             rmatrix = np.hstack((rmatrix, reg))
@@ -275,15 +286,17 @@ class DesignMatrix():
             writer.writerow(self.names)
             writer.writerows(self.matrix)
 
-    def show(self, rescale=True, ax=None):
+    def show(self, rescale=True, ax=None, cmap=None):
         """Visualization of a design matrix
 
         Parameters
         ----------
         rescale: bool, optional
-                 rescale columns magnitude for visualization or not
+                 rescale columns magnitude for visualization or not.
         ax: axis handle, optional
-            Handle to axis onto which we will draw design matrix
+            Handle to axis onto which we will draw design matrix.
+        cmap: colormap, optional
+            Matplotlib colormap to use, passed to `imshow`.
 
         Returns
         -------
@@ -299,9 +312,48 @@ class DesignMatrix():
             plt.figure()
             ax = plt.subplot(1, 1, 1)
 
-        ax.imshow(x, interpolation='Nearest', aspect='auto')
+        ax.imshow(x, interpolation='Nearest', aspect='auto',
+                  cmap=cmap)
         ax.set_label('conditions')
         ax.set_ylabel('scan number')
+
+        if self.names is not None:
+            ax.set_xticks(list(range(len(self.names))))
+            ax.set_xticklabels(self.names, rotation=60, ha='right')
+        return ax
+
+    def show_contrast(self, contrast, ax=None, cmap=None):
+        """
+        Plot a contrast for a design matrix.
+
+        Parameters
+        ----------
+        contrast : np.float
+            Array forming contrast with respect to the design matrix.
+        ax: axis handle, optional
+            Handle to axis onto which we will draw design matrix.
+        cmap: colormap, optional
+            Matplotlib colormap to use, passed to `imshow`.
+
+        Returns
+        -------
+        ax: axis handle
+        """
+        import matplotlib.pyplot as plt
+
+        contrast = np.atleast_2d(contrast)
+
+        # normalize the values per column for better visualization
+        if ax is None:
+            plt.figure()
+            ax = plt.subplot(1, 1, 1)
+
+        ax.imshow(contrast, interpolation='Nearest', 
+                  aspect='auto',
+                  cmap=cmap)
+        ax.set_label('conditions')
+        ax.set_yticks(range(contrast.shape[0]))
+        ax.set_yticklabels([])
 
         if self.names is not None:
             ax.set_xticks(range(len(self.names)))
@@ -327,7 +379,7 @@ def make_dmtx(frametimes, paradigm=None, hrf_model='canonical',
                  specifies the desired drift model,
                  to be chosen among 'polynomial', 'cosine', 'blank'
     hfcut: float, optional
-           cut frequency of the low-pass filter
+           cut period of the low-pass filter
     drift_order: int, optional
                  order of the drift model (in case it is polynomial)
     fir_delays: array of shape(nb_onsets) or list, optional,
@@ -362,7 +414,7 @@ def make_dmtx(frametimes, paradigm=None, hrf_model='canonical',
             'time-frames: %s' % (add_regs.shape[0], np.size(frametimes)))
 
     # check that additional regressor names are well specified
-    if  add_reg_names == None:
+    if  add_reg_names is None:
         add_reg_names = ['reg%d' % k for k in range(n_add_regs)]
     elif len(add_reg_names) != n_add_regs:
         raise ValueError(

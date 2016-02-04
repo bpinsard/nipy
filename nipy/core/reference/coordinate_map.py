@@ -60,6 +60,7 @@ Operations on mappings (module level functions)
    range.  For mapping `m`, this is the same as
    product(AffineTransform.identity('concat'), `m`)
 """
+from __future__ import absolute_import
 
 import warnings
 
@@ -1194,7 +1195,7 @@ def reordered_domain(mapping, order=None):
     """
     ndim = mapping.ndims[0]
     if order is None:
-        order = range(ndim)[::-1]
+        order = list(range(ndim))[::-1]
     elif type(order[0]) == type(''):
         order = [mapping.function_domain.index(s) for s in order]
 
@@ -1365,13 +1366,13 @@ def renamed_domain(mapping, newnames, name=''):
        ...
     ValueError: no domain coordinate named l
     """
-    for key in newnames.keys():
+    for key in list(newnames):
         if type(key) == type(0):
             newnames[mapping.function_domain.coord_names[key]] = \
                 newnames[key]
             del(newnames[key])
 
-    for key in newnames.keys():
+    for key in list(newnames):
         if key not in mapping.function_domain.coord_names:
             raise ValueError('no domain coordinate named %s' % str(key))
 
@@ -1429,13 +1430,13 @@ def renamed_range(mapping, newnames):
        ...
     ValueError: no range coordinate named w
     """
-    for key in newnames.keys():
+    for key in list(newnames):
         if type(key) == type(0):
             newnames[mapping.function_range.coord_names[key]] = \
                 newnames[key]
             del(newnames[key])
 
-    for key in newnames.keys():
+    for key in list(newnames):
         if key not in mapping.function_range.coord_names:
             raise ValueError('no range coordinate named %s' % str(key))
 
@@ -1500,7 +1501,7 @@ def reordered_range(mapping, order=None):
     """
     ndim = mapping.ndims[1]
     if order is None:
-        order = range(ndim)[::-1]
+        order = list(range(ndim))[::-1]
     elif type(order[0]) == type(''):
         order = [mapping.function_range.index(s) for s in order]
 
@@ -1823,14 +1824,14 @@ def drop_io_dim(cm, axis_id, fix0=True):
             raise AxisError('Input and output dimensions not orthogonal to '
                             'rest of affine')
     M, N = aff.shape
-    rows = range(M)
-    cols = range(N)
+    rows = list(range(M))
+    cols = list(range(N))
     in_dims = list(cm.function_domain.coord_names)
     out_dims = list(cm.function_range.coord_names)
-    if not in_dim is None:
+    if in_dim is not None:
         in_dims.pop(in_dim)
         cols.pop(in_dim)
-    if not out_dim is None:
+    if out_dim is not None:
         out_dims.pop(out_dim)
         rows.pop(out_dim)
     aff = aff[rows]
