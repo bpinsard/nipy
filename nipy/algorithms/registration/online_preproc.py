@@ -48,7 +48,9 @@ class EPIOnlineResample(object):
                  interleaved = 0,
                  slice_trigger_times=None,
                  slice_thickness=None,
-                 slice_axis=2,):
+                 slice_axis=2,
+                 recenter_fmap_data=True):
+
         self.fmap, self.mask = fieldmap, mask
         self.fieldmap_reg = fieldmap_reg
         if self.fmap is not None:
@@ -56,6 +58,17 @@ class EPIOnlineResample(object):
                 self.fieldmap_reg = np.eye(4)
             self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
             self.world2fmap = np.linalg.inv(self.fmap2world)
+            grid = apply_affine(
+                np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+                np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
+            self.fmap_mask = map_coordinates(
+                self.mask.get_data(),
+                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
+            if recenter_fmap_data: #recenter the fieldmap range to avoid shift
+                fmap_data = self.fmap.get_data()
+                fmap_data -= fmap_data[self.fmap_mask].mean()
+                self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
+
         self.slice_axis = slice_axis
         self.slice_order = slice_order
         self.pe_sign = int(phase_encoding_dir > 0)*2-1
