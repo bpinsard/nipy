@@ -873,56 +873,58 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             bias.fill(1)
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
-                sl_mask[data[...,sli]<=0] = False
+                sl_proc_mask = sl_mask.copy()
+                sl_proc_mask[data[...,sli]<=0] = False
                 
                 niter = 0
                 res.fill(0)
                 #print epi_pvf[sl_mask,sln].sum(0)
-                regs_subset = epi_pvf[sl_mask,sln].sum(0) > 10
-                sl_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
+                regs_subset = epi_pvf[sl_proc_mask,sln].sum(0) > 10
+                sl_proc_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
 
-                n_sl_samples = np.count_nonzero(sl_mask)
+                n_sl_samples = np.count_nonzero(sl_proc_mask)
                 if n_sl_samples < n_samples_min:
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
                     if n_sl_samples > 0:
-                        cdata2[sl_mask,sli] = cdata[sl_mask,sli] / cdata[sl_mask,sli].mean()
+                        cdata2[sl_mask,sli] = data[sl_mask,sli] / cdata[sl_mask,sli].mean()
                     else:
                         cdata2[sl_mask,sli] = 1
                     continue
                 
 #                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
 #                regs_subset[0]=False
-                regs = epi_pvf[sl_mask,sln][...,regs_subset]
-                print regs_subset, regs.shape
+                regs = epi_pvf[sl_proc_mask,sln][...,regs_subset]
                 #regs[:,0] = 1
                 regs_pinv = np.linalg.pinv(regs)
-                data_mask_mean = data[sl_mask,sli].mean()
+                data_mask_mean = data[sl_proc_mask,sli].mean()
                 white_wght[:] = epi_pvf[..., sln, white_idx]*sl_mask
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
                 tmp_res = np.empty(n_sl_samples)
                 
-                bias[...,sli].fill(1/data[sl_mask,sli].mean())
+                sl_mean = data[sl_proc_mask,sli].mean()
+                bias[...,sli].fill(1/sl_mean)
                 cdata[...,sli] = data[...,sli] * bias[...,sli]
                 while niter<maxiter:
-                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
+                    betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
                     betas[betas<0] = 1e-16
-                    tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
+                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/betas.dot(regs.T))
                     if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
                         raise RuntimeError
                     res.fill(0)
-                    res[sl_mask] = tmp_res
+                    res[sl_proc_mask] = tmp_res
                     res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
                         smooth_white_wght
-                    res_std = res[sl_mask].std()
+                    res_std = res[sl_proc_mask].std()
                     if res_std < residual_tol:
                         break
-                    bias[...,sli] *= np.exp(-res)
+                    bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
+#                    bias[...,sli] *= 1./slmean-bias[sl_proc_mask].mean()
                     cdata[...,sli] = data[...,sli] * bias[...,sli]
                     niter+=1
                     print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
-                betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
-                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(regs.T)
+                betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
+                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(epi_pvf[sl_mask,sln][...,regs_subset].T)
                 print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d ---')%((fr,str(slab))+tuple(betas)+(res_std,niter))
                 #bias = np.log(cdata/data)
             print cdata2.min(),cdata2.max()
