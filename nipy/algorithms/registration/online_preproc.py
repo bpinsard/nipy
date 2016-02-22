@@ -99,13 +99,13 @@ class EPIOnlineResample(object):
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1)>0
-#            epi_mask[:] = binary_dilation(epi_mask, iterations=2)
+            epi_mask[:] = binary_dilation(epi_mask, iterations=1)
             points = points[epi_mask]
         if not self.fmap is None:
             self._precompute_sample_fmap(coords, vol.shape)
             coords = coords.copy()
             coords += self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
-        print 'create interpolator'
+        print 'create interpolator datarange %f'%(vol[epi_mask].ptp())
         lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
         print 'interpolate'
         out[:] = lndi(coords.reshape(-1,3)).reshape(out.shape)
@@ -235,7 +235,7 @@ class EPIOnlineResample(object):
             if self.fmap is not None:
                 vol2fmap = self.world2fmap.dot(vol.get_affine())
                 fmap_voxs = nb.affines.apply_affine(vol2fmap, grid)
-                fmap_values = self.fmap_scale * map_coordinates(
+                fmap_values = shape[self.pe_dir] * self.fmap_scale * map_coordinates(
                     self.fmap.get_data(),
                     fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
@@ -258,7 +258,7 @@ class EPIOnlineResample(object):
             rvol = np.squeeze(rvol)
             del bins
         else:
-            grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4)
+            grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4).astype(np.float)
             if self.fmap is not None:
                 inv_shift = self._epi_inv_shiftmap(affine, shape)
                 grid[...,self.pe_dir] += inv_shift
@@ -447,8 +447,8 @@ class EPIOnlineRealign(EPIOnlineResample):
             grid = apply_affine(
                 np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
                 np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
-            fmap_mask = map_coordinates(
-                self.mask.get_data(),
+            self.fmap_mask = map_coordinates(
+                binary_dilation(self.mask.get_data()),
                 grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape)
             self._samples_sigloss = compute_sigloss(
                 self.fmap, self.fieldmap_reg,
@@ -810,11 +810,21 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
         ext_mask = self.mask.get_data()>0
         ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0.1] = True
 
+        ##TODO: maybe factor up there
+        grid = apply_affine(
+            np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+            np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
+        fmap_mask = map_coordinates(
+            self.mask.get_data(),
+            grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape)
+        del grid
+
         cdata = None
         for fr, slab, reg, data in realigned:
             if cdata is None: # init all
                 cdata = np.zeros(data.shape)
                 cdata2 = np.zeros(data.shape)
+                sigloss = np.zeros(frame_shape)
                 epi_pvf = np.empty(frame_shape+(pvmaps.shape[-1],))
                 epi_mask = np.zeros(frame_shape, dtype=np.bool)
                 prev_reg = np.inf
@@ -830,6 +840,18 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     mask = ext_mask)
 #                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
                 epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-1)>0
+                epi_coords = nb.affines.apply_affine(
+                    reg,
+                    np.rollaxis(np.mgrid[[slice(0,n) for n in frame_shape]],0,4))
+                """
+                sigloss[:] = compute_sigloss(
+                    self.fmap, self.fieldmap_reg,
+                    fmap_mask,
+                    np.eye(4), reg,
+                    epi_coords,
+                    self.echo_time,
+                    slicing_axis=self.slice_axis)
+                """
                 # temporary fix, should fix the mask problem
                 #epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
                 #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
@@ -842,8 +864,9 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 
                 niter = 0
                 res.fill(0)
-                regs_subset = epi_pvf[sl_mask,sln].sum(0) > 5
-                sl_mask[epi_pvf[...,sln,regs_subset][...,:-1].sum(-1)<=0] = False
+                #print epi_pvf[sl_mask,sln].sum(0)
+                regs_subset = epi_pvf[sl_mask,sln].sum(0) > 10
+                sl_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
 
                 n_sl_samples = np.count_nonzero(sl_mask)
                 if n_sl_samples < n_samples_min:
@@ -854,8 +877,10 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         cdata2[sl_mask,sli] = 1
                     continue
                 
+#                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
 #                regs_subset[0]=False
                 regs = epi_pvf[sl_mask,sln][...,regs_subset]
+                print regs_subset, regs.shape
                 #regs[:,0] = 1
                 regs_pinv = np.linalg.pinv(regs)
                 data_mask_mean = data[sl_mask,sli].mean()
@@ -885,8 +910,9 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
                 betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
                 cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(regs.T)
-                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
-#                bias = np.log(cdata/data)
+                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d ---')%((fr,str(slab))+tuple(betas)+(res_std,niter))
+                #bias = np.log(cdata/data)
+            print cdata2.min(),cdata2.max()
             yield fr, slab, reg, cdata2.copy()#, cdata.copy(),  bias
         return
 
