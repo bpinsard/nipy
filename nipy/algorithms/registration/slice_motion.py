@@ -132,8 +132,15 @@ def compute_sigloss(fieldmap, fmap_reg,
     shift_points[:] = nb.affines.apply_affine(wld2fmap, pts)[...,np.newaxis]
     shift_points[...,0] -= fmap_shift
     shift_points[...,1] += fmap_shift
-    tmp = fieldmap.get_data().copy()
-    tmp[mask==0] = np.nan
+
+    fmap_data = np.rollaxis(fieldmap.get_data(), slicing_axis, 0)
+    tmp_mask = np.rollaxis(mask, slicing_axis, 0)
+    tmp = np.zeros(tmp_mask.shape)
+    tmp[1:] = fmap_data[:-1]*tmp_mask[:-1]
+    tmp[:-1] += fmap_data[1:]*tmp_mask[1:]
+    tmp[tmp_mask] = fmap_data[tmp_mask]
+    tmp = np.rollaxis(tmp, 0, slicing_axis+1)
+
     pts = nb.affines.apply_affine(wld2fmap,pts)
     fmap_values = map_coordinates(
         tmp, np.concatenate((
@@ -152,7 +159,6 @@ def compute_sigloss(fieldmap, fmap_reg,
                 sinc[...,1]*np.sin(theta[...,1]))
     sigloss = np.sqrt(re**2+im**2).astype(fieldmap.get_data_dtype())
     del lrgradients, sinc, theta, re, im, pts, fmap_values, tmp
-    sigloss[np.isnan(sigloss)]=0
     return sigloss
 
 
@@ -1375,5 +1381,4 @@ class OnlineEPICorrection(object):
             voxs.reshape(-1,3).T, order=order).reshape(shape)
         return rvol
 
-    
-
+        
