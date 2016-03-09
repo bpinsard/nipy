@@ -460,12 +460,9 @@ class EPIOnlineRealign(EPIOnlineResample):
             grid = apply_affine(
                 np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
                 np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
-            self.fmap_mask = map_coordinates(
-                binary_dilation(self.mask.get_data()),
-                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape)
             self._samples_sigloss = compute_sigloss(
                 self.fmap, self.fieldmap_reg,
-                fmap_mask,
+                self.fmap_mask,
                 last_reg.as_affine(), self.affine,
                 self.bnd_coords,
                 self.echo_time, slicing_axis=self.slice_axis)
