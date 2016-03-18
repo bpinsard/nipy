@@ -54,20 +54,8 @@ class EPIOnlineResample(object):
         self.fmap, self.mask = fieldmap, mask
         self.fieldmap_reg = fieldmap_reg
         if self.fmap is not None:
-            if self.fieldmap_reg is None:
-                self.fieldmap_reg = np.eye(4)
-            self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
-            self.world2fmap = np.linalg.inv(self.fmap2world)
-            grid = apply_affine(
-                np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
-                np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
-            self.fmap_mask = map_coordinates(
-                self.mask.get_data(),
-                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
-            if recenter_fmap_data: #recenter the fieldmap range to avoid shift
-                fmap_data = self.fmap.get_data()
-                fmap_data -= fmap_data[self.fmap_mask].mean()
-                self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
+            self.recenter_fmap_data = recenter_fmap_data
+            self._preproc_fmap()
 
         self.slice_axis = slice_axis
         self.slice_order = slice_order
@@ -83,7 +71,6 @@ class EPIOnlineResample(object):
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
         self._resample_fmap_values = None
         self.st_ratio = 1
-
 
     def resample(self, data, out, voxcoords, order=3):
         out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0),order=order).reshape(voxcoords.shape[:-1])
@@ -108,7 +95,8 @@ class EPIOnlineResample(object):
         for sl, t in zip(slabs, transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= len(slabs)
+        # get unit norm of mean phase orientation in world space
+        phase_vec /= np.linalg.norm(phase_vec)
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1)>0
@@ -135,6 +123,25 @@ class EPIOnlineResample(object):
             out[rng,4] = gm[mask]
             out[rng,5] = data[mask]
             idx += nsamp
+
+    def _preproc_fmap():
+        if self.fieldmap_reg is None:
+            self.fieldmap_reg = np.eye(4)
+        self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
+        self.world2fmap = np.linalg.inv(self.fmap2world)
+        grid = apply_affine(
+            np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+            np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
+        self.fmap_mask = map_coordinates(
+            self.mask.get_data(),
+            grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
+        fmap_data = self.fmap.get_data()
+        if self.recenter_fmap_data: #recenter the fieldmap range to avoid shift
+            fmap_data -= fmap_data[self.fmap_mask].mean()
+        ## extend fmap values out of mask
+        #fmap_data[~self.fmap_mask] = 0
+        self.pe_dir
+        self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
 
     def _precompute_sample_fmap(self, coords, shape):
         if self.fmap is None:
