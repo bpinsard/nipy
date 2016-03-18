@@ -54,20 +54,8 @@ class EPIOnlineResample(object):
         self.fmap, self.mask = fieldmap, mask
         self.fieldmap_reg = fieldmap_reg
         if self.fmap is not None:
-            if self.fieldmap_reg is None:
-                self.fieldmap_reg = np.eye(4)
-            self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
-            self.world2fmap = np.linalg.inv(self.fmap2world)
-            grid = apply_affine(
-                np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
-                np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
-            self.fmap_mask = map_coordinates(
-                self.mask.get_data(),
-                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
-            if recenter_fmap_data: #recenter the fieldmap range to avoid shift
-                fmap_data = self.fmap.get_data()
-                fmap_data -= fmap_data[self.fmap_mask].mean()
-                self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
+            self.recenter_fmap_data = recenter_fmap_data
+            self._preproc_fmap()
 
         self.slice_axis = slice_axis
         self.slice_order = slice_order
@@ -83,7 +71,6 @@ class EPIOnlineResample(object):
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
         self._resample_fmap_values = None
         self.st_ratio = 1
-
 
     def resample(self, data, out, voxcoords, order=3):
         out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0),order=order).reshape(voxcoords.shape[:-1])
@@ -108,7 +95,8 @@ class EPIOnlineResample(object):
         for sl, t in zip(slabs, transforms):
             points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
             phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= len(slabs)
+        # get unit norm of mean phase orientation in world space
+        phase_vec /= np.linalg.norm(phase_vec)
         epi_mask = slice(0, None)
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1)>0
@@ -135,6 +123,25 @@ class EPIOnlineResample(object):
             out[rng,4] = gm[mask]
             out[rng,5] = data[mask]
             idx += nsamp
+
+    def _preproc_fmap():
+        if self.fieldmap_reg is None:
+            self.fieldmap_reg = np.eye(4)
+        self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
+        self.world2fmap = np.linalg.inv(self.fmap2world)
+        grid = apply_affine(
+            np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+            np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
+        self.fmap_mask = map_coordinates(
+            self.mask.get_data(),
+            grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
+        fmap_data = self.fmap.get_data()
+        if self.recenter_fmap_data: #recenter the fieldmap range to avoid shift
+            fmap_data -= fmap_data[self.fmap_mask].mean()
+        ## extend fmap values out of mask
+        #fmap_data[~self.fmap_mask] = 0
+        self.pe_dir
+        self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
 
     def _precompute_sample_fmap(self, coords, shape):
         if self.fmap is None:
@@ -460,12 +467,9 @@ class EPIOnlineRealign(EPIOnlineResample):
             grid = apply_affine(
                 np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
                 np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
-            self.fmap_mask = map_coordinates(
-                binary_dilation(self.mask.get_data()),
-                grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape)
             self._samples_sigloss = compute_sigloss(
                 self.fmap, self.fieldmap_reg,
-                fmap_mask,
+                self.fmap_mask,
                 last_reg.as_affine(), self.affine,
                 self.bnd_coords,
                 self.echo_time, slicing_axis=self.slice_axis)
@@ -873,60 +877,83 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             bias.fill(1)
             for sli,sln in enumerate(slab):
                 sl_mask = epi_mask[...,sln]
-                sl_mask[data[...,sli]<=0] = False
+                sl_proc_mask = sl_mask.copy()
+                sl_proc_mask[data[...,sli]<=0] = False
                 
                 niter = 0
                 res.fill(0)
                 #print epi_pvf[sl_mask,sln].sum(0)
-                regs_subset = epi_pvf[sl_mask,sln].sum(0) > 10
-                sl_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
+                regs_subset = epi_pvf[sl_proc_mask,sln].sum(0) > 10
+                sl_proc_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
 
-                n_sl_samples = np.count_nonzero(sl_mask)
+                n_sl_samples = np.count_nonzero(sl_proc_mask)
                 if n_sl_samples < n_samples_min:
                     print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
                     if n_sl_samples > 0:
-                        cdata2[sl_mask,sli] = cdata[sl_mask,sli] / cdata[sl_mask,sli].mean()
+                        cdata2[sl_mask,sli] = data[sl_mask,sli] / cdata[sl_mask,sli].mean()
                     else:
                         cdata2[sl_mask,sli] = 1
                     continue
-                
-#                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
-#                regs_subset[0]=False
-                regs = epi_pvf[sl_mask,sln][...,regs_subset]
-                print regs_subset, regs.shape
-                #regs[:,0] = 1
-                regs_pinv = np.linalg.pinv(regs)
-                data_mask_mean = data[sl_mask,sli].mean()
+
+                cdata[...,sli] = data[...,sli]
+                bias[...,sli].fill(1)
+                tmp_res = np.empty(n_sl_samples)
+
                 white_wght[:] = epi_pvf[..., sln, white_idx]*sl_mask
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
-                tmp_res = np.empty(n_sl_samples)
+
+                while niter<maxiter:
+                    means = (cdata[sl_proc_mask,sli,np.newaxis]*epi_pvf[sl_proc_mask,sln]).sum(0)/\
+                            epi_pvf[sl_proc_mask,sln].sum(0)
+                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/(means*epi_pvf[sl_proc_mask,sln]).sum(-1))
+                    res_var = tmp_res.var()
+                    print ('%d\t%s\t'+'% 4.5f\t'*len(means)+'%.5f\t%d')%((fr,str(slab))+tuple(means)+(res_var,niter))
+                    if res_var < residual_tol:
+                        break
+                    #res.fill(0)
+                    res[sl_proc_mask] = tmp_res
+                    res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
+                             smooth_white_wght
+                    bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
+                    cdata[...,sli] = data[...,sli] * bias[...,sli]
+                    niter+=1
+                """                
+#                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
+#                regs_subset[0]=False
+                regs = epi_pvf[sl_proc_mask,sln][...,regs_subset]
+                #regs[:,0] = 1
+                regs_pinv = np.linalg.pinv(regs)
+                data_mask_mean = data[sl_proc_mask,sli].mean()
                 
-                bias[...,sli].fill(1/data[sl_mask,sli].mean())
+                sl_mean = data[sl_proc_mask,sli].mean()
+                bias[...,sli].fill(1/sl_mean)
                 cdata[...,sli] = data[...,sli] * bias[...,sli]
                 while niter<maxiter:
-                    betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
+                    betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
                     betas[betas<0] = 1e-16
-                    tmp_res[:] = np.log(cdata[sl_mask,sli]/betas.dot(regs.T))
+                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/betas.dot(regs.T))
                     if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
                         raise RuntimeError
                     res.fill(0)
-                    res[sl_mask] = tmp_res
+                    res[sl_proc_mask] = tmp_res
                     res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
                         smooth_white_wght
-                    res_std = res[sl_mask].std()
+                    res_std = res[sl_proc_mask].std()
                     if res_std < residual_tol:
                         break
-                    bias[...,sli] *= np.exp(-res)
+                    bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
+#                    bias[...,sli] *= 1./slmean-bias[sl_proc_mask].mean()
                     cdata[...,sli] = data[...,sli] * bias[...,sli]
                     niter+=1
                     print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
-                betas = regs_pinv.dot(cdata[sl_mask,sli].ravel())
-                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(regs.T)
-                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d ---')%((fr,str(slab))+tuple(betas)+(res_std,niter))
+                betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
+                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(epi_pvf[sl_mask,sln][...,regs_subset].T)
+                """
+#                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d ---')%((fr,str(slab))+tuple(betas)+(res_std,niter))
                 #bias = np.log(cdata/data)
-            print cdata2.min(),cdata2.max()
-            yield fr, slab, reg, cdata2.copy()#, cdata.copy(),  bias
+            print cdata.min(),cdata.max()
+            yield fr, slab, reg, cdata.copy()#, cdata.copy(),  bias
         return
 
     def process(self, stack, *args, **kwargs):
