@@ -53,9 +53,6 @@ class EPIOnlineResample(object):
 
         self.fmap, self.mask = fieldmap, mask
         self.fieldmap_reg = fieldmap_reg
-        if self.fmap is not None:
-            self.recenter_fmap_data = recenter_fmap_data
-            self._preproc_fmap()
 
         self.slice_axis = slice_axis
         self.slice_order = slice_order
@@ -67,6 +64,10 @@ class EPIOnlineResample(object):
         self.interleaved = int(interleaved)
         self.slice_trigger_times = slice_trigger_times
         self.slice_thickness = slice_thickness
+
+        if self.fmap is not None:
+            self.recenter_fmap_data = recenter_fmap_data
+            self._preproc_fmap()
 
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
         self._resample_fmap_values = None
@@ -140,7 +141,7 @@ class EPIOnlineResample(object):
             fmap_data -= fmap_data[self.fmap_mask].mean()
         ## extend fmap values out of mask
         #fmap_data[~self.fmap_mask] = 0
-        self.pe_dir
+        #self.pe_dir
         self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
 
     def _precompute_sample_fmap(self, coords, shape):
