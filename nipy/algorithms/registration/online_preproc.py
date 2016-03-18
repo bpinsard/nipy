@@ -124,7 +124,7 @@ class EPIOnlineResample(object):
             out[rng,5] = data[mask]
             idx += nsamp
 
-    def _preproc_fmap():
+    def _preproc_fmap(self):
         if self.fieldmap_reg is None:
             self.fieldmap_reg = np.eye(4)
         self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
