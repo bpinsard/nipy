@@ -498,6 +498,7 @@ def resample4d(im4d, transforms, time_interp=True):
                            time_interp=time_interp)
     res = r.resample_full_data()
     im4d.free_data()
+    del r
     return res
 
 
@@ -874,8 +875,11 @@ class Realign4d(object):
             transforms = self._within_run_transforms
         runs = range(len(self._runs))
         if r is None:
-            data = [resample4d(self._runs[r], transforms=transforms[r],
-                               time_interp=self._time_interp) for r in runs]
+            data = []
+            for r in runs:
+                data.append(
+                    resample4d(self._runs[r], transforms=transforms[r],
+                               time_interp=self._time_interp))
             return [make_xyz_image(data[r], self._runs[r].affine, 'scanner')
                     for r in runs]
         else:

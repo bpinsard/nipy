@@ -222,25 +222,22 @@ class EPIOnlineResample(object):
         fmap2fmri = np.linalg.inv(affine).dot(self.fmap2world)
         coords = nb.affines.apply_affine(
             fmap2fmri,
-            np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))
-        shift = self.fmap_scale * self.fmap.get_data() * shape[self.pe_dir]
+            np.rollaxis(np.mgrid[[slice(0,s) for s in self.fmap.shape]],0,4))[self.fmap_mask]
+        shift = self.fmap_scale * self.fmap.get_data()[self.fmap_mask] * shape[self.pe_dir]
         coords[...,self.pe_dir] += shift
         self._inv_shiftmap = np.empty(shape)
-        #inv_shiftmap_dist = np.empty(shape)
         self._inv_shiftmap.fill(np.inf)
-        #inv_shiftmap_dist.fill(np.inf)
         includ = np.logical_and(
             np.all(coords>-.5,-1),
             np.all(coords<np.array(shape)[np.newaxis]-.5,-1))
         coords = coords[includ]
         rcoords = np.round(coords).astype(np.int)
-        #dists = np.sum((coords-rcoords)**2,-1)
         shift = shift[includ]
         self._inv_shiftmap[(rcoords[...,0],rcoords[...,1],rcoords[...,2])] = -shift
         for x,y,z in zip(*np.where(np.isinf(self._inv_shiftmap))):
             ngbd = self._inv_shiftmap[
                 max(0,x-1):x+1,max(0,y-1):y+1,max(0,z-1):z+1]
-            self._inv_shiftmap[x,y,z] = ngbd.ravel()[np.argmin(np.abs(ngbd.ravel()))]
+            self._inv_shiftmap[x,y,z] = ngbd.ravel()[np.argmin(np.abs(ngbd.ravel()))] # np.nanmedian(ngbd)  #TODO: check fastest
             del ngbd
         del includ, coords, rcoords, shift
         return self._inv_shiftmap
@@ -249,6 +246,11 @@ class EPIOnlineResample(object):
         ## resample a undistorted volume to distorted EPI space
         # order = map_coordinates order, if -1, does integral of voxels in the
         # higher resolution volume (eg. for partial volume map downsampling)
+        nvols = (vol.shape+(1,))[:4][-1]
+        rvol = np.empty(shape+(nvols,))
+        vol_data = vol.get_data()
+        if vol_data.ndim < 4:
+            vol_data = vol_data[...,np.newaxis]
         if order < 0:
             grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]][:,mask].reshape(3,-1).T
             vol2epi = np.linalg.inv(affine).dot(vol.get_affine())
@@ -260,15 +262,11 @@ class EPIOnlineResample(object):
                     self.fmap.get_data(),
                     fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
-                voxs[:, self.pe_dir] += fmap_values
+                voxs[:, self.pe_dir] -= fmap_values
                 del fmap_voxs, fmap_values
             np.round(voxs, out=voxs)
-            nvols = (vol.shape+(1,))[:4][-1]
-            rvol = np.empty(shape+(nvols,))
             bins = [np.arange(-.5,d+.5) for d in shape]
-            data = vol.get_data()[mask]
-            if len(vol.shape) < 4:
-                data = data[...,np.newaxis]
+            data = vol_data[mask]
             for v in range(nvols):
                 rvol[...,v] = np.histogramdd(voxs, bins, weights=data[...,v].ravel())[0]
             if order == -1: #normalize
@@ -282,14 +280,16 @@ class EPIOnlineResample(object):
             grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4).astype(np.float)
             if self.fmap is not None:
                 inv_shift = self._epi_inv_shiftmap(affine, shape)
-                grid[...,self.pe_dir] += inv_shift
+                grid[..., self.pe_dir] -= inv_shift
             epi2vol = np.linalg.inv(vol.get_affine()).dot(affine)
             voxs = nb.affines.apply_affine(epi2vol, grid)
-            rvol = map_coordinates(
-                vol.get_data(),
-                voxs.reshape(-1,3).T, order=order).reshape(shape)
+
+            for v in range(nvols):
+                rvol[...,v] = map_coordinates(
+                    vol_data[...,v],
+                    voxs.reshape(-1,3).T, order=order).reshape(shape)
         del grid, voxs
-        return rvol
+        return np.squeeze(rvol)
     
 
 class EPIOnlineRealign(EPIOnlineResample):
@@ -819,7 +819,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
     def correct(self, realigned, pvmaps, frame_shape, sig_smth=12, white_idx=1,
-                maxiter = 32, residual_tol = 2e-3, n_samples_min = 30):
+                maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
         
         float_mask = nb.Nifti1Image(
             self.mask.get_data().astype(np.float32),
@@ -900,25 +900,33 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 bias[...,sli].fill(1)
                 tmp_res = np.empty(n_sl_samples)
 
-                white_wght[:] = epi_pvf[..., sln, white_idx]*sl_mask
-                smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')
+                white_wght[:] = epi_pvf[..., sln, white_idx]*sl_proc_mask
+                #white_wght[:] = epi_pvf[...,sln,:3].sum(-1)
+
+                smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght, sig_smth, mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
 
                 while niter<maxiter:
                     means = (cdata[sl_proc_mask,sli,np.newaxis]*epi_pvf[sl_proc_mask,sln]).sum(0)/\
                             epi_pvf[sl_proc_mask,sln].sum(0)
-                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/(means*epi_pvf[sl_proc_mask,sln]).sum(-1))
+                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/(means*epi_pvf[sl_proc_mask,sln])[...,regs_subset].sum(-1))
+                    if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
+                        raise RuntimeError
                     res_var = tmp_res.var()
                     print ('%d\t%s\t'+'% 4.5f\t'*len(means)+'%.5f\t%d')%((fr,str(slab))+tuple(means)+(res_var,niter))
                     if res_var < residual_tol:
                         break
-                    #res.fill(0)
+                    res.fill(0)
                     res[sl_proc_mask] = tmp_res
                     res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
                              smooth_white_wght
                     bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
                     cdata[...,sli] = data[...,sli] * bias[...,sli]
                     niter+=1
+                means = (cdata[sl_proc_mask,sli,np.newaxis]*epi_pvf[sl_proc_mask,sln]).sum(0)/\
+                        epi_pvf[sl_proc_mask,sln].sum(0)
+                cdata[sl_proc_mask,sli] /= (means*epi_pvf[sl_proc_mask,sln])[...,regs_subset].sum(-1)
+                cdata[~sl_proc_mask,sli] = 1
                 """                
 #                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
 #                regs_subset[0]=False
