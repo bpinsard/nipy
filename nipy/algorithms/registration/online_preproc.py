@@ -264,18 +264,19 @@ class EPIOnlineResample(object):
                     order=1).reshape(fmap_voxs.shape[:-1])
                 voxs[:, self.pe_dir] -= fmap_values
                 del fmap_voxs, fmap_values
-            np.round(voxs, out=voxs)
-            bins = [np.arange(-.5,d+.5) for d in shape]
+            voxs = np.rint(voxs+.5).astype(np.int)
+            steps = np.asarray([shape[1]*shape[2],shape[2],1])
+            voxs_subset = np.logical_and(np.all(voxs>=0,1),np.all(voxs<shape,1))
+            indices = (voxs[voxs_subset]*steps).sum(1)
             data = vol_data[mask]
             for v in range(nvols):
-                rvol[...,v] = np.histogramdd(voxs, bins, weights=data[...,v].ravel())[0]
+                rvol[...,v].flat[:] = np.bincount(indices, data[...,v].ravel()[voxs_subset], np.prod(shape))
             if order == -1: #normalize
-                counts, _ = np.histogramdd(voxs,bins)
-                rvol /= counts[...,np.newaxis]
+                counts = np.bincount(indices, minlength=np.prod(shape))
+                rvol /= counts.reshape(shape+(1,))
                 del counts
             rvol[np.isnan(rvol)] = 0
             rvol = np.squeeze(rvol)
-            del bins
         else:
             grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4).astype(np.float)
             if self.fmap is not None:
@@ -901,7 +902,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 tmp_res = np.empty(n_sl_samples)
 
                 white_wght[:] = epi_pvf[..., sln, white_idx]*sl_proc_mask
-                #white_wght[:] = epi_pvf[...,sln,:3].sum(-1)
+                #white_wght[:] = epi_pvf[...,sln,:3].sum(-1) # not as good
 
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght, sig_smth, mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
