@@ -270,18 +270,13 @@ class EPIOnlineResample(object):
             indices = (voxs[voxs_subset]*steps).sum(1)
             data = vol_data[mask]
             for v in range(nvols):
-                #rvol[...,v].flat[voxs2.sum(1)] + =data[...,v].ravel()[voxs_subset] # doesnt sum
-                #rvol[...,v].flat[:] = np.histogram(indices, bins, weights=data[...,v].ravel()[voxs_subset])[0]
                 rvol[...,v].flat[:] = np.bincount(indices, data[...,v].ravel()[voxs_subset], np.prod(shape))
-                #rvol[...,v] = np.histogramdd(voxs, bins, weights=data[...,v].ravel())[0]
             if order == -1: #normalize
                 counts = np.bincount(indices, minlength=np.prod(shape))
-                #counts, _ = np.histogramdd(voxs,bins)
                 rvol /= counts.reshape(shape+(1,))
                 del counts
             rvol[np.isnan(rvol)] = 0
             rvol = np.squeeze(rvol)
-            #del bins
         else:
             grid = np.rollaxis(np.mgrid[[slice(0,s) for s in shape]], 0, 4).astype(np.float)
             if self.fmap is not None:
