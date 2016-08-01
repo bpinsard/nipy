@@ -100,8 +100,8 @@ class EPIOnlineResample(object):
         phase_vec /= np.linalg.norm(phase_vec)
         epi_mask = slice(0, None)
         if mask:
-            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1)>0
-            epi_mask[:] = binary_dilation(epi_mask, iterations=1)
+            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1, self.mask.get_data()>0)>0
+            #epi_mask[:] = binary_dilation(epi_mask, iterations=1)
             points = points[epi_mask]
         if not self.fmap is None:
             self._precompute_sample_fmap(coords, vol.shape)
@@ -111,6 +111,24 @@ class EPIOnlineResample(object):
         lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
         print 'interpolate'
         out[:] = lndi(coords.reshape(-1,3)).reshape(out.shape)
+
+    def ribbon_resample(self, data, out, slabs, transforms, inner_surf, outer_surf, mask=True):
+        nslices = data[0].shape[2]*len(slabs)
+        vol = np.empty(data[0].shape[:2]+(nslices,))
+        points = np.empty(vol.shape+(3,))
+        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol.shape]],0,4)
+        phase_vec = np.zeros(3)
+        for sl, d in zip(slabs, data):
+            vol[...,sl] = d
+        for sl, t in zip(slabs, transforms):
+            points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
+            phase_vec+= t[:3,self.pe_dir]
+        # get unit norm of mean phase orientation in world space
+        phase_vec /= np.linalg.norm(phase_vec)
+
+        #epi_vox_kdtree = scipy.spatial.KDTree(points.reshape(-1,3))        
+        
+        pass
 
     def allpoints(self, stack_iter, out, gm_pve_idx=0, gm_thr=.1):
         idx=0
@@ -242,7 +260,7 @@ class EPIOnlineResample(object):
         del includ, coords, rcoords, shift
         return self._inv_shiftmap
             
-    def inv_resample(self, vol, affine, shape, order=0, mask=slice(None)):
+    def inv_resample(self, vol, affine, shape, order=0, mask=None):
         ## resample a undistorted volume to distorted EPI space
         # order = map_coordinates order, if -1, does integral of voxels in the
         # higher resolution volume (eg. for partial volume map downsampling)
@@ -252,7 +270,10 @@ class EPIOnlineResample(object):
         if vol_data.ndim < 4:
             vol_data = vol_data[...,np.newaxis]
         if order < 0:
-            grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]][:,mask].reshape(3,-1).T
+            if mask is None:
+                grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]].reshape(3,-1).T
+            else:
+                grid = np.argwhere(mask)
             vol2epi = np.linalg.inv(affine).dot(vol.get_affine())
             voxs = nb.affines.apply_affine(vol2epi, grid)
             if self.fmap is not None:
@@ -262,9 +283,9 @@ class EPIOnlineResample(object):
                     self.fmap.get_data(),
                     fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
-                voxs[:, self.pe_dir] -= fmap_values
+                voxs[:, self.pe_dir] += fmap_values
                 del fmap_voxs, fmap_values
-            voxs = np.rint(voxs+.5).astype(np.int)
+            voxs = np.rint(voxs).astype(np.int)
             steps = np.asarray([shape[1]*shape[2],shape[2],1])
             voxs_subset = np.logical_and(np.all(voxs>=0,1),np.all(voxs<shape,1))
             indices = (voxs[voxs_subset]*steps).sum(1)
@@ -819,7 +840,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
-    def correct(self, realigned, pvmaps, frame_shape, sig_smth=12, white_idx=1,
+    def correct(self, realigned, pvmaps, frame_shape, sig_smth=8, white_idx=1,
                 maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
         
         float_mask = nb.Nifti1Image(
@@ -858,11 +879,12 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     pvmaps, reg, frame_shape, -1,
                     mask = ext_mask)
 #                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
-                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-1)>0
+                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-1, mask=ext_mask)>0
+                """
                 epi_coords = nb.affines.apply_affine(
                     reg,
                     np.rollaxis(np.mgrid[[slice(0,n) for n in frame_shape]],0,4))
-                """
+
                 sigloss[:] = compute_sigloss(
                     self.fmap, self.fieldmap_reg,
                     fmap_mask,
@@ -871,13 +893,13 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     self.echo_time,
                     slicing_axis=self.slice_axis)
                 """
-                # temporary fix, should fix the mask problem
-                #epi_mask[:] = epi_pvf[...,:].sum(-1) > 0
-                #epi_mask[epi_pvf[...,:].sum(-1) <=0] = False
+
             cdata.fill(0)
             cdata2.fill(1)
             bias.fill(1)
             for sli,sln in enumerate(slab):
+                if sln==12:
+                    raise RuntimeError
                 sl_mask = epi_mask[...,sln]
                 sl_proc_mask = sl_mask.copy()
                 sl_proc_mask[data[...,sli]<=0] = False
@@ -902,7 +924,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 tmp_res = np.empty(n_sl_samples)
 
                 white_wght[:] = epi_pvf[..., sln, white_idx]*sl_proc_mask
-                #white_wght[:] = epi_pvf[...,sln,:3].sum(-1) # not as good
 
                 smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght, sig_smth, mode='constant')
                 smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
@@ -919,8 +940,8 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         break
                     res.fill(0)
                     res[sl_proc_mask] = tmp_res
-                    res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
-                             smooth_white_wght
+                    res[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')/smooth_white_wght
+
                     bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
                     cdata[...,sli] = data[...,sli] * bias[...,sli]
                     niter+=1
@@ -928,40 +949,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         epi_pvf[sl_proc_mask,sln].sum(0)
                 cdata[sl_proc_mask,sli] /= (means*epi_pvf[sl_proc_mask,sln])[...,regs_subset].sum(-1)
                 cdata[~sl_proc_mask,sli] = 1
-                """                
-#                regs_subset[np.argmin(epi_pvf[sl_mask,sln][...,regs_subset].sum(0))] = False
-#                regs_subset[0]=False
-                regs = epi_pvf[sl_proc_mask,sln][...,regs_subset]
-                #regs[:,0] = 1
-                regs_pinv = np.linalg.pinv(regs)
-                data_mask_mean = data[sl_proc_mask,sli].mean()
-                
-                sl_mean = data[sl_proc_mask,sli].mean()
-                bias[...,sli].fill(1/sl_mean)
-                cdata[...,sli] = data[...,sli] * bias[...,sli]
-                while niter<maxiter:
-                    betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
-                    betas[betas<0] = 1e-16
-                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/betas.dot(regs.T))
-                    if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
-                        raise RuntimeError
-                    res.fill(0)
-                    res[sl_proc_mask] = tmp_res
-                    res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/\
-                        smooth_white_wght
-                    res_std = res[sl_proc_mask].std()
-                    if res_std < residual_tol:
-                        break
-                    bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
-#                    bias[...,sli] *= 1./slmean-bias[sl_proc_mask].mean()
-                    cdata[...,sli] = data[...,sli] * bias[...,sli]
-                    niter+=1
-                    print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d')%((fr,str(slab))+tuple(betas)+(res_std,niter))
-                betas = regs_pinv.dot(cdata[sl_proc_mask,sli].ravel())
-                cdata2[sl_mask,sli] = cdata[sl_mask,sli] / betas.dot(epi_pvf[sl_mask,sln][...,regs_subset].T)
-                """
-#                print ('%d\t%s\t'+'% 4.5f\t'*len(betas)+'%.5f\t%d ---')%((fr,str(slab))+tuple(betas)+(res_std,niter))
-                #bias = np.log(cdata/data)
+
             print cdata.min(),cdata.max()
             yield fr, slab, reg, cdata.copy()#, cdata.copy(),  bias
         return
