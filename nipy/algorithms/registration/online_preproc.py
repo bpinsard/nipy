@@ -938,7 +938,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                         break
                     res.fill(0)
                     res[sl_proc_mask] = tmp_res
-                    res[:] = scipy.ndimage.filters.gaussian_filter(white_wght,sig_smth,mode='constant')/smooth_white_wght
+                    res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/smooth_white_wght
 
                     bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
                     cdata[...,sli] = data[...,sli] * bias[...,sli]
