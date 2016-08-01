@@ -312,8 +312,8 @@ class EPIOnlineResample(object):
                     voxs.reshape(-1,3).T, order=order).reshape(shape)
         del grid, voxs
         return np.squeeze(rvol)
-    
-
+                
+                 
 class EPIOnlineRealign(EPIOnlineResample):
 
     def __init__(self,
@@ -898,8 +898,6 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
             cdata2.fill(1)
             bias.fill(1)
             for sli,sln in enumerate(slab):
-                if sln==12:
-                    raise RuntimeError
                 sl_mask = epi_mask[...,sln]
                 sl_proc_mask = sl_mask.copy()
                 sl_proc_mask[data[...,sli]<=0] = False
