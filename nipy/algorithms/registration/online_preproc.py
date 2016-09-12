@@ -55,6 +55,10 @@ class EPIOnlineResample(object):
         self.fieldmap_reg = fieldmap_reg
 
         self.slice_axis = slice_axis
+        self.in_slice_axes = np.ones(3, np.bool)
+        self.in_slice_axes[self.slice_axis] = False
+
+
         self.slice_order = slice_order
         self.pe_sign = int(phase_encoding_dir > 0)*2-1
         self.pe_dir = abs(phase_encoding_dir)-1
@@ -82,7 +86,7 @@ class EPIOnlineResample(object):
         coords = apply_affine(
             target_transform,
             np.rollaxis(np.mgrid[[slice(0,d) for d in out.shape]],0,4))
-        self.scatter_resample(data, out, transforms, coords, mask=mask)
+        self.scatter_resample(data, out, slabs, transforms, coords, mask=mask)
         del coords
 
     def scatter_resample(self, data, out, slabs, transforms, coords, mask=True):
@@ -312,8 +316,8 @@ class EPIOnlineResample(object):
                     voxs.reshape(-1,3).T, order=order).reshape(shape)
         del grid, voxs
         return np.squeeze(rvol)
-                
-                 
+
+
 class EPIOnlineRealign(EPIOnlineResample):
 
     def __init__(self,
@@ -351,12 +355,12 @@ class EPIOnlineRealign(EPIOnlineResample):
 
                  bbr_shift=1.5,
                  bbr_slope=1,
-                 bbr_offset=0,
+                 bbr_offset=1,
 
                  iekf_jacobian_epsilon=1e-6,
                  iekf_convergence=1e-4,
                  iekf_max_iter=8,
-                 iekf_observation_var=1e4,
+                 iekf_observation_var=1,
                  iekf_transition_cov=1e-2,
                  iekf_init_state_cov=1e-1):
 
@@ -531,7 +535,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
         self.observation_variance = self._n_samples*self.iekf_observation_var/self._samples_reliability
-        #self.observation_variance = np.ones(self._n_samples)*self.iekf_observation_var
+        self.observation_variance = np.ones(self._n_samples)*self.iekf_observation_var
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
@@ -566,18 +570,22 @@ class EPIOnlineRealign(EPIOnlineResample):
                         new_reg.param = estim_state[:6]
                         self.sample_cost_jacobian(sl, sl_data, new_reg)
                     cost, jac = self._cost[0], self._cost[1:]
-#                    cost, jac = self._samples[0,0]-.5, self._samples[1:,0]-self._samples[0,0]
+                    #cost, jac = self._samples[0,0]-.5, self._samples[1:,0]-self._samples[0,0]
 
-                    mm[mm] = self.observation_variance[mm] < 1e16
+                    #mm[mm] = self.observation_variance[mm] < 1e16
+                    """
                     kalman_gain = np.dot(
                         pred_covariance.dot(jac[:,mm]),
                         np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])+
                                       np.diag(self.observation_variance[mm])))
+                    """
+                    S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask])
+                    kalman_gain = np.dot(pred_covariance.dot(jac), np.dual.inv(S))
+
                     estim_state_old = estim_state.copy()
-#                    print 'bias', self._cost[:,mm].mean(1)
-#                    print 'gain', kalman_gain.dot(cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
-                    estim_state[:] = estim_state + kalman_gain.dot(cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
-                    state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(pred_covariance)
+                    #print 'bias', self._cost[:,mm].mean(1)
+                    #print 'gain', kalman_gain.dot(cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
+                    estim_state[:] = estim_state + kalman_gain.dot(1/cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
 
                     self.tmp_states.append(estim_state-pred_state)
                     convergence = np.sqrt(((estim_state_old-estim_state)**2).sum())
@@ -586,6 +594,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
+            state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(pred_covariance)
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
 
@@ -714,12 +723,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         sm = np.abs(np.squeeze(np.diff(self._samples[0,1:,mm],1,1)))+1
 #        sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))+1
 
-#        self._cost[:,mm] = np.tanh(self.bbr_slope*(
-#                self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
-        self._cost[0,mm] = (self._samples[0,1:,mm].sum(1)-2*self._samples[0,0,mm])/sm
+        self._cost[:,mm] = np.tanh(1+self.bbr_slope*(
+            self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
+#        self._cost[0,mm] = (self._samples[0,1:,mm].sum(1)-2*self._samples[0,0,mm])/sm
         
-        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-self._samples[0,1:,mm].sum(1)-\
-            2*(self._samples[1:7,0,mm]-self._samples[0,0,mm]))/sm/epsilon
+#        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-self._samples[0,1:,mm].sum(1)-\
+#            2*(self._samples[1:7,0,mm]-self._samples[0,0,mm]))/sm/epsilon
 #        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[0]
         #compute partial derivatives
 #        self._cost[1:,mm] -= np.tanh(self.bbr_slope*(
@@ -806,8 +815,8 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 
     def _init_energy(self):
-#        sm = self._reg_samples.mean(0)+1
-        sm = np.abs(np.diff(self._reg_samples[1:],1,0))[0]+1
+        sm = self._reg_samples.mean(0)+1
+#        sm = np.abs(np.diff(self._reg_samples[1:],1,0))[0]+1
         self._cost[0] = (self._reg_samples[1:].sum(0)-2*self._reg_samples[0])/sm
 #        self._cost[0] = np.tanh(self.bbr_slope*self._cost[0]-self.bbr_offset)
         del sm
@@ -838,9 +847,30 @@ class EPIOnlineRealign(EPIOnlineResample):
                 costs[p,idx]  = self.sample_cost(slab, data, tt)
         return costs
 
+class EPIOnlineRealignCC(EPIOnlineRealign):
+
+    
+    def sample_cost(self, slab, data, transform):
+
+        self.apply_transform(
+            transform,
+            self.bnd_coords,
+            self.normals,
+            self.slab_bnd_coords,
+            self.slab_bnd_normals,
+            self.fmap_values,
+            phase_dim=data.shape[self.pe_dir])
+
+        self.slab_bnd_coords[1] -= self.slab_bnd_normals*self.bbr_shift
+        self.slab_bnd_coords[2] += self.slab_bnd_normals*self.bbr_shift
+        self.resample(data, self._reg_samples, self.slab_bnd_coords,order=self._interp_order)
+        self._init_energy()
+        return np.abs(self._cost[0,self._samples_mask]).mean()
+
+
 class EPIOnlineRealignFilter(EPIOnlineResample):
     
-    def correct(self, realigned, pvmaps, frame_shape, sig_smth=8, white_idx=1,
+    def correct(self, realigned, pvmaps, frame_shape, sig_smth=16, white_idx=1,
                 maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
         
         float_mask = nb.Nifti1Image(
@@ -879,7 +909,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                     pvmaps, reg, frame_shape, -1,
                     mask = ext_mask)
 #                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
-                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-1, mask=ext_mask)>0
+                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-2, mask=ext_mask)>0
                 """
                 epi_coords = nb.affines.apply_affine(
                     reg,
@@ -949,7 +979,7 @@ class EPIOnlineRealignFilter(EPIOnlineResample):
                 cdata[~sl_proc_mask,sli] = 1
 
             print cdata.min(),cdata.max()
-            yield fr, slab, reg, cdata.copy()#, cdata.copy(),  bias
+            yield fr, slab, reg, cdata.copy(),bias.copy()
         return
 
     def process(self, stack, *args, **kwargs):
