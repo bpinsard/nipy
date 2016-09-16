@@ -14,6 +14,7 @@ from .groupwise_registration import (interp_slice_times, scanner_coords,
                                      single_run_realign4d, realign4d,
                                      SpaceTimeRealign,
                                      Realign4d, FmriRealign4d)
+from .online_preproc import OnlineRealignBiasCorrection
 
 from .scripting import space_time_realign, aff2euler
 
