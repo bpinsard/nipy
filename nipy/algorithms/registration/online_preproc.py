@@ -13,7 +13,7 @@ from scipy.optimize import fmin_slsqp
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
-#from pykdtree.kdtree import KDTree
+#from pykdtree.kdtree import KDTree ## seems slower in practice
 from scipy.spatial import cKDTree as KDTree
 from scipy.interpolate import LinearNDInterpolator, interpn
 from .slice_motion import surface_to_samples, vertices_normals, compute_sigloss, intensity_factor
@@ -143,9 +143,9 @@ class EPIOnlineResample(object):
             weights = np.exp(-(dists/rbf_sigma)**2)
             if not pve_map is None:
                 weights *= epi_pvf[...,sl][slab_mask][idx2]
-            weights[weights<.1] = 0 # truncate 
-            out[idx] += d[idx2]*weights
-            out_weights[idx] += weights
+            weights[weights<.1] = 0 # truncate
+            np.add.at(out, idx, d[idx2]*weights)
+            np.add.at(out_weights, idx, weights)
         out /= out_weights
         print np.count_nonzero(out_weights==0)
         out[np.isinf(out)] = np.nan
