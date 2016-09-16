@@ -13,8 +13,8 @@ from scipy.optimize import fmin_slsqp
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
-from pykdtree.kdtree import KDTree
-#from scipy.spatial import cKDTree as KDTree
+#from pykdtree.kdtree import KDTree
+from scipy.spatial import cKDTree as KDTree
 from scipy.interpolate import LinearNDInterpolator, interpn
 from .slice_motion import surface_to_samples, vertices_normals, compute_sigloss, intensity_factor
 
@@ -93,7 +93,9 @@ class EPIOnlineResample(object):
         self.scatter_resample(data, out, slabs, transforms, coords, mask=mask)
         del coords
 
-    def scatter_resample_rbf(self, data, out, slabs, transforms, coords, rbf_sigma=3, kneigh_dens=256, mask=True):
+    def scatter_resample_rbf(self, data, out, slabs, transforms, coords,
+                             pve_map = None,
+                             rbf_sigma=3, kneigh_dens=256, mask=True):
         nslices = data[0].shape[2]*len(slabs)
         vol_shape = data[0].shape[:2]+(nslices,)
         phase_vec = np.zeros(3)
@@ -117,6 +119,10 @@ class EPIOnlineResample(object):
             epi_mask = self.inv_resample(self.mask, transforms[len(transforms)/2],
                                          vol_shape, -1, self.mask.get_data()>0)>0
 
+        if not pve_map is None:
+            epi_pvf = self.inv_resample(
+                pve_map, transforms[len(transforms)/2], vol_shape, -1, mask = self.mask_data)
+
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
         ## could/shoud we avoid loop here and do all slices in the meantime
         for sl, d, t in zip(slabs, data, transforms):
@@ -135,6 +141,9 @@ class EPIOnlineResample(object):
             idx = idx[not_inf]
             dists = dists[not_inf]
             weights = np.exp(-(dists/rbf_sigma)**2)
+            if not pve_map is None:
+                weights *= epi_pvf[...,sl][slab_mask][idx2]
+            weights[weights<.1] = 0 # truncate 
             out[idx] += d[idx2]*weights
             out_weights[idx] += weights
         out /= out_weights
@@ -606,10 +615,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 sm_sl = gaussian_filter(sl_w, sig_smth, mode='constant')
                 ref_w = self._interp_data[0,...,sli]*self._slab_wm_weight[...,sli]
                 sm_ref = gaussian_filter(ref_w, sig_smth, mode='constant')
-                ratio = sl_w[self._slab_mask[...,sli]].sum()/\
-                        (sl_w[self._slab_mask[...,sli]]*sm_ref[self._slab_mask[...,sli]]/sm_sl[self._slab_mask[...,sli]]).sum()
-                print ratio
-                self._bias[...,sli] = ratio * sm_sl/sm_ref
+                #ratio = sl_w[self._slab_mask[...,sli]].sum()/\
+                #        (sl_w[self._slab_mask[...,sli]]*sm_ref[self._slab_mask[...,sli]]/sm_sl[self._slab_mask[...,sli]]).sum()
+                #print ratio
+                #self._bias[...,sli] = ratio * sm_sl/sm_ref
+                self._bias[...,sli] = sm_sl/sm_ref
             self._bias[~self._slab_mask] = 1
             
             sl_data /= self._bias
