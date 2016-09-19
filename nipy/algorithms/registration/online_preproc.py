@@ -104,7 +104,6 @@ class EPIOnlineResample(object):
         phase_vec /= np.linalg.norm(phase_vec)
         if (not hasattr(self,'_scat_resam_rbf_coords') or
             not self._scat_resam_rbf_coords is coords):
-            print('init ckdtree')
             ## TODO: if fieldmap recompute kdtree for each iteration, the fieldmap evolves!!
             if not self.fmap is None:
                 self._precompute_sample_fmap(coords, vol_shape)
@@ -126,7 +125,6 @@ class EPIOnlineResample(object):
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
         ## could/shoud we avoid loop here and do all slices in the meantime
         for sl, d, t in zip(slabs, data, transforms):
-            print sl
             if mask:
                 slab_mask = epi_mask[...,sl]
                 d = d[slab_mask]
@@ -143,7 +141,7 @@ class EPIOnlineResample(object):
             weights = np.exp(-(dists/rbf_sigma)**2)
             if not pve_map is None:
                 weights *= epi_pvf[...,sl][slab_mask][idx2]
-            weights[weights<.01] = 0 # truncate
+            weights[weights<.05] = 0 # truncate
             np.add.at(out, idx, d[idx2]*weights)
             np.add.at(out_weights, idx, weights)
         out /= out_weights
