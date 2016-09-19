@@ -143,7 +143,7 @@ class EPIOnlineResample(object):
             weights = np.exp(-(dists/rbf_sigma)**2)
             if not pve_map is None:
                 weights *= epi_pvf[...,sl][slab_mask][idx2]
-            weights[weights<.1] = 0 # truncate
+            weights[weights<.01] = 0 # truncate
             np.add.at(out, idx, d[idx2]*weights)
             np.add.at(out_weights, idx, weights)
         out /= out_weights
@@ -387,6 +387,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  anat_reg,
                  wm_weight=None,
                  bias_correction=True,
+                 bias_sigma = 8,
                  fieldmap = None,
                  fieldmap_reg=None,
 
@@ -435,6 +436,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self.mask_data = self.mask.get_data()>0
 
         self._bias_correction = bias_correction
+        self._bias_sigma = bias_sigma
         self.wm_weight = wm_weight
         if self._bias_correction and self.wm_weight is None:
             raise ValueError
@@ -602,7 +604,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._nvox_in_slab_mask = self._slab_mask.sum()
 
         bias_correction = True
-        sig_smth = 10
         if bias_correction:
             self._bias[~self._slab_mask] = 1
             for sli in range(self._bias.shape[self.slice_axis]):
@@ -612,9 +613,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 # TODO: set to match other slicing
                 # TODO: use decomposition of gaussiant to perform all slices in meantime
                 sl_w = sl_data[...,sli]*self._slab_wm_weight[...,sli]
-                sm_sl = gaussian_filter(sl_w, sig_smth, mode='constant')
+                sm_sl = gaussian_filter(sl_w, self._bias_sigma, mode='constant')
                 ref_w = self._interp_data[0,...,sli]*self._slab_wm_weight[...,sli]
-                sm_ref = gaussian_filter(ref_w, sig_smth, mode='constant')
+                sm_ref = gaussian_filter(ref_w, self._bias_sigma, mode='constant')
                 #ratio = sl_w[self._slab_mask[...,sli]].sum()/\
                 #        (sl_w[self._slab_mask[...,sli]]*sm_ref[self._slab_mask[...,sli]]/sm_sl[self._slab_mask[...,sli]]).sum()
                 #print ratio
