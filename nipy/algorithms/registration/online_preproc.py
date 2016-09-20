@@ -580,12 +580,13 @@ class EPIOnlineRealign(EPIOnlineResample):
                                       np.diag(self.observation_variance[mm])))
                     """
                     S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask])
-                    kalman_gain = np.dot(pred_covariance.dot(jac), np.dual.inv(S))
+                    #kalman_gain = np.dot(pred_covariance.dot(jac), np.dual.inv(S))
+                    kalman_gain = np.linalg.solve(S, pred_covariance.dot(jac))
 
                     estim_state_old = estim_state.copy()
                     #print 'bias', self._cost[:,mm].mean(1)
                     #print 'gain', kalman_gain.dot(cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
-                    estim_state[:] = estim_state + kalman_gain.dot(1/cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
+                    estim_state[:] = estim_state + kalman_gain.dot(cost[mm])
 
                     self.tmp_states.append(estim_state-pred_state)
                     convergence = np.sqrt(((estim_state_old-estim_state)**2).sum())
