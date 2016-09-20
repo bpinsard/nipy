@@ -210,10 +210,10 @@ class EPIOnlineResample(object):
     def _preproc_fmap(self):
         if self.fieldmap_reg is None:
             self.fieldmap_reg = np.eye(4)
-        self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.get_affine())
+        self.fmap2world = np.dot(self.fieldmap_reg, self.fmap.affine)
         self.world2fmap = np.linalg.inv(self.fmap2world)
         grid = apply_affine(
-            np.linalg.inv(self.mask.get_affine()).dot(self.fmap2world),
+            np.linalg.inv(self.mask.affine).dot(self.fmap2world),
             np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
         self.fmap_mask = map_coordinates(
             self.mask.get_data(),
@@ -338,16 +338,16 @@ class EPIOnlineResample(object):
                 grid = np.mgrid[[slice(0,s) for s in vol.shape[:3]]].reshape(3,-1).T
             else:
                 grid = np.argwhere(mask)
-            vol2epi = np.linalg.inv(affine).dot(vol.get_affine())
+            vol2epi = np.linalg.inv(affine).dot(vol.affine)
             voxs = nb.affines.apply_affine(vol2epi, grid)
             if self.fmap is not None:
-                vol2fmap = self.world2fmap.dot(vol.get_affine())
+                vol2fmap = self.world2fmap.dot(vol.affine)
                 fmap_voxs = nb.affines.apply_affine(vol2fmap, grid)
                 fmap_values = shape[self.pe_dir] * self.fmap_scale * map_coordinates(
                     self.fmap.get_data(),
                     fmap_voxs.T,
                     order=1).reshape(fmap_voxs.shape[:-1])
-                voxs[:, self.pe_dir] += fmap_values
+                voxs[:, self.pe_dir] -= fmap_values
                 del fmap_voxs, fmap_values
             voxs = np.rint(voxs).astype(np.int)
             steps = np.asarray([shape[1]*shape[2],shape[2],1])
@@ -367,7 +367,7 @@ class EPIOnlineResample(object):
             if self.fmap is not None:
                 inv_shift = self._epi_inv_shiftmap(affine, shape)
                 grid[..., self.pe_dir] -= inv_shift
-            epi2vol = np.linalg.inv(vol.get_affine()).dot(affine)
+            epi2vol = np.linalg.inv(vol.affine).dot(affine)
             voxs = nb.affines.apply_affine(epi2vol, grid)
 
             for v in range(nvols):
@@ -493,6 +493,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         
         new_reg = Rigid(radius=RADIUS)
 
+        slices_pred_covariance = []
         self.tmp_states=[]
         while stack_has_data:
             
@@ -519,6 +520,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                     break
 
                 S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask.flatten()])
+
                 kalman_gain = np.dual.solve(S, pred_covariance.dot(jac).T, check_finite=False).T
                 
                 estim_state_old = estim_state.copy()
@@ -603,10 +605,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         bias_correction = True
         if bias_correction:
-            self._bias[~self._slab_mask] = 1
+            self._bias.fill(1)
             for sli in range(self._bias.shape[self.slice_axis]):
                 if np.count_nonzero(self._slab_wm_weight[...,sli]) < 20:
-                    self._bias[...,sli] = 1
                     continue
                 # TODO: set to match other slicing
                 # TODO: use decomposition of gaussiant to perform all slices in meantime
@@ -637,7 +638,7 @@ class NiftiIterator():
         
         self.nii = nii
         self.nslices,self.nframes = self.nii.shape[2:4]
-        self._affine = self.nii.get_affine()
+        self._affine = self.nii.affine
         self._voxel_size = np.asarray(self.nii.header.get_zooms()[:3])
         self._slice_order = np.arange(self.nslices)
         self._shape = self.nii.shape
@@ -646,14 +647,14 @@ class NiftiIterator():
     def iter_frame(self, data=True):
         data = self.nii.get_data()
         for t in range(data.shape[3]):
-            yield t, self.nii.get_affine(), data[:,:,:,t]
+            yield t, self.nii.affine, data[:,:,:,t]
         del data
 
     def iter_slabs(self, data=True):
         data = self.nii.get_data()
         for t in range(data.shape[3]):
             for s,tt in enumerate(self._slice_trigger_times):
-                yield t, [s], self.nii.get_affine(), tt, data[:,:,s,t,np.newaxis]
+                yield t, [s], self.nii.affine, tt, data[:,:,s,t,np.newaxis]
         del data
 
 def resample_mat_shape(mat,shape,voxsize):
