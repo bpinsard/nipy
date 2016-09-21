@@ -563,7 +563,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
             self._slab_coords = np.empty((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
             self._interp_data = np.empty((7,)+sl_data.shape, dtype=DTYPE)
-            self._bias = np.empty(sl_data.shape, dtype=DTYPE)
+            self._bias = np.ones(sl_data.shape, dtype=DTYPE)
             self._cost = np.empty(self._interp_data.shape, dtype=DTYPE)
             self._slab_mask = np.empty(sl_data.shape, dtype=np.bool)
             self._slab_wm_weight = np.empty(sl_data.shape, dtype=DTYPE)
@@ -603,8 +603,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._slab_mask[self._slab_mask] = data_mask
         self._nvox_in_slab_mask = self._slab_mask.sum()
 
-        bias_correction = True
-        if bias_correction:
+        if self._bias_correction:
             self._bias.fill(1)
             for sli in range(self._bias.shape[self.slice_axis]):
                 if np.count_nonzero(self._slab_wm_weight[...,sli]) < 20:
