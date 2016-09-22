@@ -10,7 +10,7 @@ from .affine import Rigid, Affine, rotation_vec2mat
 
 from .optimizer import configure_optimizer, use_derivatives
 from scipy.optimize import fmin_slsqp
-from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
+from scipy.ndimage import convolve1d, gaussian_filter, gaussian_filter1d, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
 #from pykdtree.kdtree import KDTree ## seems slower in practice
@@ -558,7 +558,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         
     def _sample_cost_jacobian(self, sl, sl_data, new_reg):
-        
+        in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
+
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
             self._slab_coords = np.empty((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
@@ -567,10 +568,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._cost = np.empty(self._interp_data.shape, dtype=DTYPE)
             self._slab_mask = np.empty(sl_data.shape, dtype=np.bool)
             self._slab_wm_weight = np.empty(sl_data.shape, dtype=DTYPE)
-            for d in range(sl_data.ndim):
-                if not d == self.slice_axis:
-                    self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
-                        (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
+            for d in in_slice_axes:
+                self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
+                    (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
         self._slab_vox_idx[...,self.slice_axis] = np.asarray(sl)[[
             (slice(0,None) if self.slice_axis==d2 else None) for d2 in range(sl_data.ndim)]]
         
@@ -588,10 +588,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.mask_data,
             anat_slab_coords.reshape(-1,3).T,
             order=0).reshape(sl_data.shape)>0
-        self._slab_wm_weight[:] = map_coordinates(
-            self.wm_weight_data,
-            anat_slab_coords.reshape(-1,3).T,
-            order=0).reshape(sl_data.shape)
         
         self._interp_data.fill(0)
         self._interp_data[:, self._slab_mask] = map_coordinates(
@@ -604,28 +600,132 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._nvox_in_slab_mask = self._slab_mask.sum()
 
         if self._bias_correction:
+            self._slab_wm_weight[:] = map_coordinates(
+                self.wm_weight_data,
+                anat_slab_coords.reshape(-1,3).T,
+                order=0).reshape(sl_data.shape)
             self._bias.fill(1)
-            for sli in range(self._bias.shape[self.slice_axis]):
-                if np.count_nonzero(self._slab_wm_weight[...,sli]) < 20:
-                    continue
-                # TODO: set to match other slicing
-                # TODO: use decomposition of gaussiant to perform all slices in meantime
-                sl_w = sl_data[...,sli]*self._slab_wm_weight[...,sli]
-                sm_sl = gaussian_filter(sl_w, self._bias_sigma, mode='constant')
-                ref_w = self._interp_data[0,...,sli]*self._slab_wm_weight[...,sli]
-                sm_ref = gaussian_filter(ref_w, self._bias_sigma, mode='constant')
-                #ratio = sl_w[self._slab_mask[...,sli]].sum()/\
-                #        (sl_w[self._slab_mask[...,sli]]*sm_ref[self._slab_mask[...,sli]]/sm_sl[self._slab_mask[...,sli]]).sum()
-                #print ratio
-                #self._bias[...,sli] = ratio * sm_sl/sm_ref
-                self._bias[...,sli] = sm_sl/sm_ref
-            self._bias[~self._slab_mask] = 1
-            
-            sl_data /= self._bias
+            weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
+            if sum(weight_per_slice) > len(weight_per_slice)*20:
+                self._bias.fill(1)
+                sl_data_smooth = sl_data * self._slab_wm_weight
+                interp_data_smooth = self._interp_data[0] * self._slab_wm_weight            
+                # use separability of gaussian filter
+                for d in in_slice_axes:
+                    sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d, mode='constant')
+                    interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, mode='constant')
+                
+                self._bias[:] = sl_data_smooth / interp_data_smooth
+                self._bias[interp_data_smooth<=0] = 1
+                self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
+                self._bias[...,weight_per_slice<20] = 1
+                sl_data /= self._bias
         
         self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
         self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
                                          self.iekf_jacobian_epsilon
+
+    def correct(self, realigned, pvmaps, frame_shape, sig_smth=16, white_idx=1,
+                maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
+        
+        float_mask = nb.Nifti1Image(
+            self.mask.get_data().astype(np.float32),
+            self.mask.get_affine())
+
+        ext_mask = self.mask.get_data()>0
+        ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0.1] = True
+
+        cdata = None
+        for fr, slab, reg, data in realigned:
+            if cdata is None: # init all
+                cdata = np.zeros(data.shape)
+                cdata2 = np.zeros(data.shape)
+                sigloss = np.zeros(frame_shape)
+                epi_pvf = np.empty(frame_shape+(pvmaps.shape[-1],))
+                epi_mask = np.zeros(frame_shape, dtype=np.bool)
+                prev_reg = np.inf
+                white_wght = np.empty(data.shape[:2])
+                smooth_white_wght = np.empty(data.shape[:2])
+                res = np.empty(data.shape[:2])
+                bias = np.empty(data.shape)
+            if not np.allclose(prev_reg, reg, 1e-6):
+                prev_reg = reg
+                #print 'sample pvf and mask'
+                epi_pvf[:] = self.inv_resample(
+                    pvmaps, reg, frame_shape, -1,
+                    mask = ext_mask)
+#                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, 0)
+                epi_mask[:] = self.inv_resample(self.mask, reg, frame_shape, order=-2, mask=ext_mask)>0
+                """
+                epi_coords = nb.affines.apply_affine(
+                    reg,
+                    np.rollaxis(np.mgrid[[slice(0,n) for n in frame_shape]],0,4))
+                sigloss[:] = compute_sigloss(
+                    self.fmap, self.fieldmap_reg,
+                    fmap_mask,
+                    np.eye(4), reg,
+                    epi_coords,
+                    self.echo_time,
+                    slicing_axis=self.slice_axis)
+                """
+
+            cdata.fill(0)
+            cdata2.fill(1)
+            bias.fill(1)
+            for sli,sln in enumerate(slab):
+                sl_mask = epi_mask[...,sln]
+                sl_proc_mask = sl_mask.copy()
+                sl_proc_mask[data[...,sli]<=0] = False
+                
+                niter = 0
+                res.fill(0)
+                #print epi_pvf[sl_mask,sln].sum(0)
+                regs_subset = epi_pvf[sl_proc_mask,sln].sum(0) > 10
+                sl_proc_mask[epi_pvf[...,sln,regs_subset].sum(-1)<=0] = False
+
+                n_sl_samples = np.count_nonzero(sl_proc_mask)
+                if n_sl_samples < n_samples_min:
+                    print 'not enough samples (%d) skipping slice %d'%(epi_mask[...,sln].sum(),sln)
+                    if n_sl_samples > 0:
+                        cdata2[sl_mask,sli] = data[sl_mask,sli] / cdata[sl_mask,sli].mean()
+                    else:
+                        cdata2[sl_mask,sli] = 1
+                    continue
+
+                cdata[...,sli] = data[...,sli]
+                bias[...,sli].fill(1)
+                tmp_res = np.empty(n_sl_samples)
+
+                white_wght[:] = epi_pvf[..., sln, white_idx]*sl_proc_mask
+
+                smooth_white_wght[:] = scipy.ndimage.filters.gaussian_filter(white_wght, sig_smth, mode='constant')
+                smooth_white_wght[np.logical_and(smooth_white_wght==0,sl_mask)] = 1e-8
+
+                while niter<maxiter:
+                    means = (cdata[sl_proc_mask,sli,np.newaxis]*epi_pvf[sl_proc_mask,sln]).sum(0)/\
+                            epi_pvf[sl_proc_mask,sln].sum(0)
+                    tmp_res[:] = np.log(cdata[sl_proc_mask,sli]/(means*epi_pvf[sl_proc_mask,sln])[...,regs_subset].sum(-1))
+                    if np.count_nonzero(np.isnan(tmp_res))>0 or np.count_nonzero(np.isinf(tmp_res))>0:
+                        raise RuntimeError
+                    res_var = tmp_res.var()
+                    print ('%d\t%s\t'+'% 4.5f\t'*len(means)+'%.5f\t%d')%((fr,str(slab))+tuple(means)+(res_var,niter))
+                    if res_var < residual_tol:
+                        break
+                    res.fill(0)
+                    res[sl_proc_mask] = tmp_res
+                    res[:] = scipy.ndimage.filters.gaussian_filter(res*white_wght,sig_smth,mode='constant')/smooth_white_wght
+
+                    bias[...,sli] *= np.exp(-res+res[sl_proc_mask].mean())
+                    cdata[...,sli] = data[...,sli] * bias[...,sli]
+                    niter+=1
+                means = (cdata[sl_proc_mask,sli,np.newaxis]*epi_pvf[sl_proc_mask,sln]).sum(0)/\
+                        epi_pvf[sl_proc_mask,sln].sum(0)
+                cdata[sl_proc_mask,sli] /= (means*epi_pvf[sl_proc_mask,sln])[...,regs_subset].sum(-1)
+                cdata[~sl_proc_mask,sli] = 1
+
+            print cdata.min(),cdata.max()
+            yield fr, slab, reg, cdata.copy(),bias.copy()
+        return
             
 def filenames_to_dicoms(fnames):
     for f in fnames:
