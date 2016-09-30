@@ -456,7 +456,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         self.data1 = data1.astype(DTYPE)
         #self.data1 = gaussian_filter(self.data1, 1)
-        #self.data1 = self.data1-convolve1d(convolve1d(self.data1, [1/3.]*3,0),[1/3.]*3,1)
+        self.data1 = self.data1-convolve1d(convolve1d(self.data1, [1/3.]*3,0),[1/3.]*3,1)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -493,13 +493,16 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         
         new_reg = Rigid(radius=RADIUS)
 
-        slices_pred_covariance = []
+        self.slices_pred_covariance = dict()
         self.tmp_states=[]
         while stack_has_data:
             
             pred_state = transition_matrix.dot(self.filtered_state_means[-1])
             estim_state = pred_state.copy()
-            pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
+            #pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
+            if not str(sl) in self.slices_pred_covariance:
+                self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
+            pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
             state_covariance = pred_covariance.copy()
 
             print 'frame %d slab %s'%(fr,str(sl)) + '_'*80
@@ -509,10 +512,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             new_reg.param = estim_state[:6]
 
             mean_cost = np.inf
-            #sl_data_lap = sl_data-convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+            sl_data_lap = sl_data-convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
-                self._sample_cost_jacobian(sl, sl_data, new_reg)
+                self._sample_cost_jacobian(sl, sl_data_lap, new_reg)
                 mask = self._slab_mask
                 cost, jac = self._cost[0,mask], self._cost[1:,mask]
                 if self._nvox_in_slab_mask < self.iekf_min_nsamples_per_slab:
@@ -538,11 +541,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
-            #self.all_biases.append(self._bias[...,0].copy())
 
             self.niters.append(niter)
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
+            self.slices_pred_covariance[str(sl)] = state_covariance
 
             new_reg.param = estim_state[:6]
             self.matrices.append(new_reg.as_affine())
