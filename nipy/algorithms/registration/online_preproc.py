@@ -436,9 +436,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._bias_correction = bias_correction
         self._bias_sigma = bias_sigma
         self.wm_weight = wm_weight
-        if self._bias_correction and self.wm_weight is None:
-            raise ValueError
-        self.wm_weight_data = self.wm_weight.get_data()
+        if self._bias_correction:
+            if self.wm_weight is None:
+                raise ValueError
+            else:
+                self.wm_weight_data = self.wm_weight.get_data()
 
     def process(self, stack, ref_frame=None, yield_raw=False):
 
