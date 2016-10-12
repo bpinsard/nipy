@@ -408,18 +408,18 @@ class EPIOnlineRealign(EPIOnlineResample):
                  maxfun=MAXFUN,
 
                  nsamples_per_slab=1000,
-                 min_nsamples_per_slab=50,
 
                  bbr_shift=1.5,
                  bbr_slope=1,
                  bbr_offset=1,
 
-                 iekf_jacobian_epsilon=1e-6,
-                 iekf_convergence=1e-4,
+                 iekf_min_nsamples_per_slab=200,
+                 iekf_jacobian_epsilon=1e-3,
+                 iekf_convergence=1e-3,
                  iekf_max_iter=8,
-                 iekf_observation_var=1,
-                 iekf_transition_cov=1e-2,
-                 iekf_init_state_cov=1e-1):
+                 iekf_observation_var=1e-3,
+                 iekf_transition_cov=1e-3,
+                 iekf_init_state_cov=1e-3):
 
         super(EPIOnlineRealign,self).__init__(
                  fieldmap,fieldmap_reg,
@@ -440,11 +440,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.border_nvox = self.bnd_coords.shape[0]
 
         self.nsamples_per_slab = nsamples_per_slab
-        self.min_nsamples_per_slab = min_nsamples_per_slab
         self.affine_class = affine_class
         self.init_reg = init_reg
         self.bbr_shift, self.bbr_slope, self.bbr_offset = bbr_shift, bbr_slope, bbr_offset
 
+
+        self.iekf_min_nsamples_per_slab = iekf_min_nsamples_per_slab
         self.iekf_jacobian_epsilon = iekf_jacobian_epsilon
         self.iekf_convergence = iekf_convergence
         self.iekf_max_iter = iekf_max_iter
@@ -619,7 +620,7 @@ class EPIOnlineRealign(EPIOnlineResample):
             convergence, niter = np.inf, 0
             new_reg.param = estim_state[:6]
             self.sample_cost_jacobian(sl, sl_data, new_reg, force_recompute_subset=True)
-            if self._n_slab_samples < self.min_nsamples_per_slab:
+            if self._n_slab_samples < self.iekf_min_nsamples_per_slab:
                 print 'not enough points, skipping slab'
             else:
                 while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
@@ -652,7 +653,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 #            self._init_energy()
 #            self.sample_cost_jacobian(sl, sl_data, new_reg)
 
-            print ('%8f :' + '% 2.5f,'*6)%((np.abs(cost).mean(),)+tuple(estim_state))
+            print ('%8f :' + '% 2.5f,'*6)%((np.abs(self._cost[0,mm]).mean(),)+tuple(estim_state))
             print 'update : ', ('% 2.5f,'*6)%tuple(estim_state-self.filtered_state_means[-2])
             print '_'*100 + '\n'
             new_reg.param = estim_state[:6]
@@ -766,7 +767,7 @@ class EPIOnlineRealign(EPIOnlineResample):
                 del projnorm,proj_z,tan_arcsin_z
 
         mm[:] = self._slab_slice_mask>=0
-        if np.count_nonzero(mm) < self.min_nsamples_per_slab:
+        if np.count_nonzero(mm) < self.iekf_min_nsamples_per_slab:
             return
         #sm = self._samples[...,mm].mean(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[0,1:,mm],1,1)))+1
@@ -774,21 +775,10 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 
         ####new cost: np.tanh(((a-b)*2)/(a-c)-1)
-        self._cost[:,mm] = np.squeeze(np.tanh(-np.diff(self._samples[:,:2,mm],1,1)/np.diff(self._samples[:,1:,mm],1,1)-.5))
+        self._cost[:,mm] = np.squeeze(np.tanh(.1*(-np.diff(self._samples[:,:2,mm],1,1)/np.diff(self._samples[:,1:,mm],1,1)-.5)))
         self._cost[1:,mm] -= self._cost[0,mm]
+        self._cost[1:,mm] /= self.iekf_jacobian_epsilon
 
-        #self._cost[:,mm] = np.tanh(1+self.bbr_slope*(
-            #self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
-#        self._cost[0,mm] = (self._samples[0,1:,mm].sum(1)-2*self._samples[0,0,mm])/sm
-        
-#        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-self._samples[0,1:,mm].sum(1)-\
-#            2*(self._samples[1:7,0,mm]-self._samples[0,0,mm]))/sm/epsilon
-#        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[0]
-        #compute partial derivatives
-#        self._cost[1:,mm] -= np.tanh(self.bbr_slope*(
-#                self._samples[7:,1:,mm].sum(1)-2*self._samples[7:,0,mm])/sm[7:]-self.bbr_offset)
-#        self._cost[1:,mm] -= self._cost[0,mm]
-#        self._cost[1:,mm] /= epsilon
         del sm#, excl
 
     def _update_subset(self, slab, transform, shape, force_recompute_subset=False):
@@ -864,16 +854,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.slab_bnd_coords[2] += self.slab_bnd_normals*self.bbr_shift
         self.resample(data, self._reg_samples, self.slab_bnd_coords,order=self._interp_order)
         self._init_energy()
-        return np.abs(self._cost[0,self._samples_mask]).mean()
+        return np.abs(self._cost[0,~np.isnan(self._cost[0])]).mean()
 #        return np.abs(self._reg_samples[0,self._samples_mask]-.5).mean()
 
 
     def _init_energy(self):
-        sm = self._reg_samples.mean(0)+1
-#        sm = np.abs(np.diff(self._reg_samples[1:],1,0))[0]+1
-        self._cost[0] = (self._reg_samples[1:].sum(0)-2*self._reg_samples[0])/sm
-#        self._cost[0] = np.tanh(self.bbr_slope*self._cost[0]-self.bbr_offset)
-        del sm
+        self._cost[0] = np.tanh(.1*(-np.diff(self._reg_samples[:2],1,0)/np.diff(self._reg_samples[1:],1,0)-.5))
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
@@ -900,26 +886,6 @@ class EPIOnlineRealign(EPIOnlineResample):
                 tt.param = transform.param+(mmm*delta)
                 costs[p,idx]  = self.sample_cost(slab, data, tt)
         return costs
-
-class EPIOnlineRealignCC(EPIOnlineRealign):
-
-    
-    def sample_cost(self, slab, data, transform):
-
-        self.apply_transform(
-            transform,
-            self.bnd_coords,
-            self.normals,
-            self.slab_bnd_coords,
-            self.slab_bnd_normals,
-            self.fmap_values,
-            phase_dim=data.shape[self.pe_dir])
-
-        self.slab_bnd_coords[1] -= self.slab_bnd_normals*self.bbr_shift
-        self.slab_bnd_coords[2] += self.slab_bnd_normals*self.bbr_shift
-        self.resample(data, self._reg_samples, self.slab_bnd_coords,order=self._interp_order)
-        self._init_energy()
-        return np.abs(self._cost[0,self._samples_mask]).mean()
 
 
 class EPIOnlineRealignFilter(EPIOnlineResample):
