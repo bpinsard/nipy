@@ -383,11 +383,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
     def __init__(self,
                  mask,
                  anat_reg,
-                 wm_weight=None,
-                 bias_correction=True,
+                 wm_weight = None,
+                 bias_correction = True,
                  bias_sigma = 8,
+                 register_gradient = False,
                  fieldmap = None,
-                 fieldmap_reg=None,
+                 fieldmap_reg = None,
 
                  phase_encoding_dir = 1,
                  repetition_time = 3.0,
@@ -400,13 +401,13 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  slice_thickness = None,
                  slice_axis = 2,
 
-                 iekf_min_nsamples_per_slab=200,
-                 iekf_jacobian_epsilon=1e-3,
-                 iekf_convergence=1e-3,
-                 iekf_max_iter=8,
-                 iekf_observation_var=1,
-                 iekf_transition_cov=1e-3,
-                 iekf_init_state_cov=1e-3):
+                 iekf_min_nsamples_per_slab = 200,
+                 iekf_jacobian_epsilon = 1e-3,
+                 iekf_convergence = 1e-3,
+                 iekf_max_iter = 8,
+                 iekf_observation_var = 1,
+                 iekf_transition_cov = 1e-3,
+                 iekf_init_state_cov = 1e-3):
 
         self.iekf_min_nsamples_per_slab = iekf_min_nsamples_per_slab
         self.iekf_jacobian_epsilon = iekf_jacobian_epsilon
@@ -435,6 +436,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         self._bias_correction = bias_correction
         self._bias_sigma = bias_sigma
+        self._register_gradient = register_gradient
         self.wm_weight = wm_weight
         if self._bias_correction:
             if self.wm_weight is None:
@@ -456,9 +458,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         else:
             data1 = self._first_frame
 
-        self.data1 = data1.astype(DTYPE)
-        #self.data1 = gaussian_filter(self.data1, 1)
-        self.data1 = self.data1-convolve1d(convolve1d(self.data1, [1/3.]*3,0),[1/3.]*3,1)
+        self.register_refvol = data1.astype(DTYPE)
+        #self.register_refvol = gaussian_filter(self.register_refvol, 1)
+        if self._register_gradient:
+            self.register_refvol = self.register_refvol - convolve1d(convolve1d(self.register_refvol, [1/3.]*3,0),[1/3.]*3,1)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -514,10 +517,13 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             new_reg.param = estim_state[:6]
 
             mean_cost = np.inf
-            sl_data_lap = sl_data-convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+            if self._register_gradient:
+                slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+            else:
+                slice_data_reg = sl_data
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
-                self._sample_cost_jacobian(sl, sl_data_lap, new_reg)
+                self._sample_cost_jacobian(sl, slice_data_reg, new_reg)
                 mask = self._slab_mask
                 cost, jac = self._cost[0,mask], self._cost[1:,mask]
                 if self._nvox_in_slab_mask < self.iekf_min_nsamples_per_slab:
@@ -596,7 +602,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         
         self._interp_data.fill(0)
         self._interp_data[:, self._slab_mask] = map_coordinates(
-            self.data1, 
+            self.register_refvol, 
             self._slab_coords[:,self._slab_mask.flatten(),:].reshape(-1,3).T,
             cval=np.nan).reshape(7,-1)
 
