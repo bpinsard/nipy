@@ -6,12 +6,13 @@ from ...fixes.nibabel import io_orientation
 from ...core.image.image_spaces import (make_xyz_image,
                                         xyz_affine,
                                         as_xyz_image)
-from .affine import Rigid, rotation_vec2mat
+from .affine import Rigid, Affine, rotation_vec2mat
 
 from .optimizer import configure_optimizer, use_derivatives
 from scipy.optimize import fmin_slsqp
 from scipy.ndimage import convolve1d, gaussian_filter, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
+from scipy.spatial import cKDTree as KDTree
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.interpolate import LinearNDInterpolator, interpn
 from .slice_motion import surface_to_samples, vertices_normals, compute_sigloss, intensity_factor
@@ -88,6 +89,62 @@ class EPIOnlineResample(object):
             np.rollaxis(np.mgrid[[slice(0,d) for d in out.shape]],0,4))
         self.scatter_resample(data, out, slabs, transforms, coords, mask=mask)
         del coords
+
+    def scatter_resample_rbf(self, data, out, slabs, transforms, coords,
+                             pve_map = None,
+                             rbf_sigma=3, kneigh_dens=256, mask=True):
+        nslices = data[0].shape[2]*len(slabs)
+        vol_shape = data[0].shape[:2]+(nslices,)
+        phase_vec = np.zeros(3)
+        for sl, t in zip(slabs, transforms):
+            phase_vec+= t[:3,self.pe_dir]
+        phase_vec /= np.linalg.norm(phase_vec)
+        if (not hasattr(self,'_scat_resam_rbf_coords') or
+            not self._scat_resam_rbf_coords is coords):
+            ## TODO: if fieldmap recompute kdtree for each iteration, the fieldmap evolves!!
+            if not self.fmap is None:
+                self._precompute_sample_fmap(coords, vol_shape)
+                coords = coords.copy()
+                coords += self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
+            self._coords_kdtree = KDTree(coords)
+        coords_kdtree = self._coords_kdtree 
+        out.fill(0)
+        out_weights = np.zeros(len(coords))
+
+        if mask:
+            epi_mask = self.inv_resample(self.mask, transforms[len(transforms)/2],
+                                         vol_shape, -1, self.mask.get_data()>0)>0
+
+        if not pve_map is None:
+            epi_pvf = self.inv_resample(
+                pve_map, transforms[len(transforms)/2], vol_shape, -1, mask = self.mask_data)
+
+        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
+        ## could/shoud we avoid loop here and do all slices in the meantime
+        for sl, d, t in zip(slabs, data, transforms):
+            if mask:
+                slab_mask = epi_mask[...,sl]
+                d = d[slab_mask]
+                points = apply_affine(t, voxs[...,sl,:][slab_mask,:])
+                if len(points) < 1:
+                    continue
+            else:
+                points = apply_affine(t, voxs[...,sl,:])
+            dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=16)
+            not_inf = np.logical_not(np.isinf(dists))
+            idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
+            idx = idx[not_inf]
+            dists = dists[not_inf]
+            weights = np.exp(-(dists/rbf_sigma)**2)
+            if not pve_map is None:
+                weights *= epi_pvf[...,sl][slab_mask][idx2]
+            weights[weights<.05] = 0 # truncate
+            np.add.at(out, idx, d[idx2]*weights)
+            np.add.at(out_weights, idx, weights)
+        out /= out_weights
+        print np.count_nonzero(out_weights==0)
+        out[np.isinf(out)] = np.nan
+
 
     def scatter_resample(self, data, out, slabs, transforms, coords, mask=True):
         nslices = data[0].shape[2]*len(slabs)
@@ -534,7 +591,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         
         # R the (co)variance (as we suppose white observal noise)
         # this could be used to weight samples
-        self.observation_variance = self._n_samples*self.iekf_observation_var/self._samples_reliability
+        #self.observation_variance = self._n_samples*self.iekf_observation_var/self._samples_reliability
         self.observation_variance = np.ones(self._n_samples)*self.iekf_observation_var
 
         stack_it = stack.iter_slabs()
@@ -569,33 +626,24 @@ class EPIOnlineRealign(EPIOnlineResample):
                     if niter>0:
                         new_reg.param = estim_state[:6]
                         self.sample_cost_jacobian(sl, sl_data, new_reg)
-                    cost, jac = self._cost[0], self._cost[1:]
-                    #cost, jac = self._samples[0,0]-.5, self._samples[1:,0]-self._samples[0,0]
+                    cost, jac = self._cost[0,mm], self._cost[1:,mm]
 
-                    #mm[mm] = self.observation_variance[mm] < 1e16
-                    """
-                    kalman_gain = np.dot(
-                        pred_covariance.dot(jac[:,mm]),
-                        np.linalg.inv(jac[:,mm].T.dot(pred_covariance).dot(jac[:,mm])+
-                                      np.diag(self.observation_variance[mm])))
-                    """
-                    S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask])
-                    #kalman_gain = np.dot(pred_covariance.dot(jac), np.dual.inv(S))
-                    kalman_gain = np.linalg.solve(S, pred_covariance.dot(jac))
+                    S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mm])
+                    kalman_gain = np.dual.solve(S, pred_covariance.dot(jac).T, check_finite=False).T
 
                     estim_state_old = estim_state.copy()
-                    #print 'bias', self._cost[:,mm].mean(1)
-                    #print 'gain', kalman_gain.dot(cost[mm] + jac[:,mm].T.dot(pred_state-estim_state))
-                    estim_state[:] = estim_state + kalman_gain.dot(cost[mm])
+                    estim_state[:] = estim_state + kalman_gain.dot(cost)
+
+                    I_KH = np.eye(ndim_state) - np.dot(kalman_gain, jac.T)
+                    state_covariance[:] = np.dot(I_KH, pred_covariance)
 
                     self.tmp_states.append(estim_state-pred_state)
-                    convergence = np.sqrt(((estim_state_old-estim_state)**2).sum())
+                    convergence = np.abs(estim_state_old-estim_state).max()
                     niter += 1
-                    print ("%.8f %.5f : "+"% 2.5f,"*6)%((convergence,np.abs(cost[mm]).mean()) +tuple(estim_state[:6]))
+                    print ("%.8f %.5f : "+"% 2.5f,"*6)%((convergence,np.abs(cost).mean()) +tuple(estim_state[:6]))
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
-            state_covariance[:] = (np.eye(ndim_state)-kalman_gain.dot(jac[:,mm].T)).dot(pred_covariance)
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
 
@@ -604,7 +652,7 @@ class EPIOnlineRealign(EPIOnlineResample):
 #            self._init_energy()
 #            self.sample_cost_jacobian(sl, sl_data, new_reg)
 
-            print ('%8f :' + '% 2.5f,'*6)%((np.abs(self._cost[0]).mean(),)+tuple(estim_state))
+            print ('%8f :' + '% 2.5f,'*6)%((np.abs(cost).mean(),)+tuple(estim_state))
             print 'update : ', ('% 2.5f,'*6)%tuple(estim_state-self.filtered_state_means[-2])
             print '_'*100 + '\n'
             new_reg.param = estim_state[:6]
@@ -720,12 +768,17 @@ class EPIOnlineRealign(EPIOnlineResample):
         mm[:] = self._slab_slice_mask>=0
         if np.count_nonzero(mm) < self.min_nsamples_per_slab:
             return
-#        sm = self._samples[...,mm].mean(1)
+        #sm = self._samples[...,mm].mean(1)
         sm = np.abs(np.squeeze(np.diff(self._samples[0,1:,mm],1,1)))+1
-#        sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))+1
+        #sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))+1
 
-        self._cost[:,mm] = np.tanh(1+self.bbr_slope*(
-            self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
+
+        ####new cost: np.tanh(((a-b)*2)/(a-c)-1)
+        self._cost[:,mm] = np.squeeze(np.tanh(-np.diff(self._samples[:,:2,mm],1,1)/np.diff(self._samples[:,1:,mm],1,1)-.5))
+        self._cost[1:,mm] -= self._cost[0,mm]
+
+        #self._cost[:,mm] = np.tanh(1+self.bbr_slope*(
+            #self._samples[:7,1:,mm].sum(1)-2*self._samples[:7,0,mm])/sm[:7]-self.bbr_offset)
 #        self._cost[0,mm] = (self._samples[0,1:,mm].sum(1)-2*self._samples[0,0,mm])/sm
         
 #        self._cost[1:,mm] = (self._samples[1:7,1:,mm].sum(1)-self._samples[0,1:,mm].sum(1)-\
