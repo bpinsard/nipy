@@ -387,6 +387,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  bias_correction = True,
                  bias_sigma = 8,
                  register_gradient = False,
+                 dog_sigmas = [1,2],
                  fieldmap = None,
                  fieldmap_reg = None,
 
@@ -437,6 +438,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._bias_correction = bias_correction
         self._bias_sigma = bias_sigma
         self._register_gradient = register_gradient
+        self._dog_sigmas = dog_sigmas
         self.wm_weight = wm_weight
         if self._bias_correction:
             if self.wm_weight is None:
@@ -459,10 +461,13 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             data1 = self._first_frame
 
         self.register_refvol = data1.astype(DTYPE)
-        #self.register_refvol = gaussian_filter(self.register_refvol, 1)
         if self._register_gradient:
-            self.register_refvol = self.register_refvol - convolve1d(convolve1d(self.register_refvol, [1/3.]*3,0),[1/3.]*3,1)
-
+            #self.register_refvol = self.register_refvol-convolve1d(convolve1d(self.register_refvol, [1/3.]*3,0),[1/3.]*3,1)
+            # 2D DOG
+            self.register_refvol = (
+                reduce(lambda i,d: gaussian_filter1d(i, self._dog_sigmas[0], d), [0,1], self.register_refvol)-
+                reduce(lambda i,d: gaussian_filter1d(i, self._dog_sigmas[1], d), [0,1], self.register_refvol))
+            
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
         self.nslices = stack.nslices
@@ -518,7 +523,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
             mean_cost = np.inf
             if self._register_gradient:
-                slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+                #slice_data_reg = sl_data / convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+                # 2D DOG
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
+                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
             else:
                 slice_data_reg = sl_data
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
@@ -599,11 +607,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.mask_data,
             anat_slab_coords.reshape(-1,3).T,
             order=0).reshape(sl_data.shape)>0
-        
+
         self._interp_data.fill(0)
         self._interp_data[:, self._slab_mask] = map_coordinates(
             self.register_refvol, 
             self._slab_coords[:,self._slab_mask.flatten(),:].reshape(-1,3).T,
+            mode='constant',
             cval=np.nan).reshape(7,-1)
 
         data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
