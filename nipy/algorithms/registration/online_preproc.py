@@ -700,13 +700,13 @@ class EPIOnlineRealign(EPIOnlineResample):
         sa = self.slice_axis
         slice_axes = np.ones(3, np.bool)
         slice_axes[sa] = False
-
-        mm = self._samples_mask
-        mm[:] = self._slab_slice_mask>=0
         
         epsilon = self.iekf_jacobian_epsilon
         
         self._update_subset(slab, transform, data.shape, force_recompute_subset=force_recompute_subset)
+
+        mm = self._samples_mask
+        mm[:] = self._slab_slice_mask>=0
 
         for si, s in enumerate(slab):
             mm[:] = self._slab_slice_mask==s
