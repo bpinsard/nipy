@@ -509,10 +509,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             
             pred_state = transition_matrix.dot(self.filtered_state_means[-1])
             estim_state = pred_state.copy()
-            #pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
-            if not str(sl) in self.slices_pred_covariance:
-                self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
-            pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
+            pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
+            #if not str(sl) in self.slices_pred_covariance:
+            #    self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
+            #pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
             state_covariance = pred_covariance.copy()
 
             print 'frame %d slab %s'%(fr,str(sl)) + '_'*80
@@ -532,11 +532,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg)
-                mask = self._slab_mask
-                cost, jac = self._cost[0,mask], self._cost[1:,mask]
                 if self._nvox_in_slab_mask < self.iekf_min_nsamples_per_slab:
                     print 'not enough point'
                     break
+
+                mask = self._slab_mask
+                cost, jac = self._cost[0,mask], self._cost[1:,mask]
 
                 S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask.flatten()])
 
@@ -544,9 +545,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 
                 estim_state_old = estim_state.copy()
                 estim_state[:] = estim_state + kalman_gain.dot(cost)
-
-                I_KH = np.eye(ndim_state) - np.dot(kalman_gain, jac.T)
-                state_covariance[:] = np.dot(I_KH, pred_covariance)
 
                 mean_cost = (cost**2).mean()
                 self.tmp_states.append(estim_state-pred_state)
@@ -557,7 +555,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
-
+            if niter>0:
+                I_KH = np.eye(ndim_state) - np.dot(kalman_gain, jac.T)
+                state_covariance[:] = np.dot(I_KH, pred_covariance)
+            
             self.niters.append(niter)
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
@@ -642,6 +643,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 sl_data /= self._bias
         
         self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
+        #self._cost[:,self._slab_mask] = np.tanh((sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])/100)
         self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
                                          self.iekf_jacobian_epsilon
 
