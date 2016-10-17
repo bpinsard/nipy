@@ -1,4 +1,4 @@
-import numpy as np
+sliimport numpy as np
 
 import nibabel as nb, dicom
 from nibabel.affines import apply_affine
@@ -78,7 +78,7 @@ class EPIOnlineResample(object):
         self._resample_fmap_values = None
         self.st_ratio = 1
 
-    def resample(self, data, out, voxcoords, order=3):
+    def resample(self, data, out, voxcoords, order=1):
         out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0),order=order).reshape(voxcoords.shape[:-1])
 #        out[:] = interpn(tuple([np.arange(d) for d in data.shape]),data,voxcoords,bounds_error=False,fill_value=0)
         return out
@@ -453,7 +453,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         self.iekf_transition_cov = iekf_transition_cov
         self.iekf_init_state_cov = iekf_init_state_cov
 
-        self._interp_order = 3
+        self._interp_order = 1
 
         # compute fmap values on the surface used for realign
         if self.fmap != None:
@@ -756,8 +756,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                 # coordinates between 2 projected coordinates
                 crds[:,0] = crds[:,1:].sum(1)/2.
                 # add a minimum of space between samples
-                crds[:,1,:,:2] -= projnorm*proj_z[:,np.newaxis]*.2
-                crds[:,2,:,:2] += projnorm*proj_z[:,np.newaxis]*.2
+                #crds[:,1,:,:2] -= projnorm*proj_z[:,np.newaxis]*.1
+                #crds[:,2,:,:2] += projnorm*proj_z[:,np.newaxis]*.1
                 # resample 
                 self._samples[:,:,mm] = map_coordinates(
                     data[...,si].astype(np.float),
@@ -769,12 +769,9 @@ class EPIOnlineRealign(EPIOnlineResample):
         mm[:] = self._slab_slice_mask>=0
         if np.count_nonzero(mm) < self.iekf_min_nsamples_per_slab:
             return
-        #sm = self._samples[...,mm].mean(1)
-        sm = np.abs(np.squeeze(np.diff(self._samples[0,1:,mm],1,1)))+1
-        #sm = np.abs(np.squeeze(np.diff(self._samples[:,1:,mm],1,1)))+1
-
 
         ####new cost: np.tanh(((a-b)*2)/(a-c)-1)
+        #### A(WM) --- B --- C(GM)
         self._cost[:,mm] = np.squeeze(np.tanh(.1*(-np.diff(self._samples[:,:2,mm],1,1)/np.diff(self._samples[:,1:,mm],1,1)-.5)))
         self._cost[1:,mm] -= self._cost[0,mm]
         self._cost[1:,mm] /= self.iekf_jacobian_epsilon
