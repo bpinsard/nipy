@@ -81,7 +81,7 @@ class EPIOnlineResample(object):
         self._resample_fmap_values = None
         self.st_ratio = 1
 
-    def resample(self, data, out, voxcoords, order=3):
+    def resample(self, data, out, voxcoords, order=1):
         out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0),order=order).reshape(voxcoords.shape[:-1])
 #        out[:] = interpn(tuple([np.arange(d) for d in data.shape]),data,voxcoords,bounds_error=False,fill_value=0)
         return out
@@ -467,7 +467,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.register_refvol = (
                 reduce(lambda i,d: gaussian_filter1d(i, self._dog_sigmas[0], d), [0,1], self.register_refvol)-
                 reduce(lambda i,d: gaussian_filter1d(i, self._dog_sigmas[1], d), [0,1], self.register_refvol))
-            
+        #self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i, 1, d), [0,1], self.register_refvol)
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
         self.nslices = stack.nslices
@@ -529,6 +529,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                                  reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
             else:
                 slice_data_reg = sl_data
+            #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg)
@@ -582,12 +583,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
-            self._slab_coords = np.empty((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
-            self._interp_data = np.empty((7,)+sl_data.shape, dtype=DTYPE)
+            self._slab_coords = np.zeros((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
+            self._interp_data = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
             self._bias = np.ones(sl_data.shape, dtype=DTYPE)
-            self._cost = np.empty(self._interp_data.shape, dtype=DTYPE)
-            self._slab_mask = np.empty(sl_data.shape, dtype=np.bool)
-            self._slab_wm_weight = np.empty(sl_data.shape, dtype=DTYPE)
+            self._cost = np.zeros(self._interp_data.shape, dtype=DTYPE)
+            self._slab_mask = np.zeros(sl_data.shape, dtype=np.bool)
+            self._slab_wm_weight = np.zeros(sl_data.shape, dtype=DTYPE)
             for d in in_slice_axes:
                 self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
                     (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
@@ -614,6 +615,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.register_refvol, 
             self._slab_coords[:,self._slab_mask.flatten(),:].reshape(-1,3).T,
             mode='constant',
+            order=1,
             cval=np.nan).reshape(7,-1)
 
         data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
@@ -642,8 +644,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 self._bias[...,weight_per_slice<20] = 1
                 sl_data /= self._bias
         
-        self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
-        #self._cost[:,self._slab_mask] = np.tanh((sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])/100)
+        #self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
+        self._cost[:,self._slab_mask] = np.tanh((sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])/100)
         self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
                                          self.iekf_jacobian_epsilon
 
