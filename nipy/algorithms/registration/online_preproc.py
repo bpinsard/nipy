@@ -475,8 +475,11 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 
         self._n_samples = self.bnd_coords.shape[0]
-        self.slab_bnd_coords = np.empty((3,self._n_samples,3),np.double)
-        self.slab_bnd_normals = np.empty((self._n_samples,3),np.double)
+        #self.slab_bnd_coords = np.empty((3,self._n_samples,3),np.double)
+        self.slab_bnd_coords = np.empty((7,self._n_samples,3),np.double)
+        #self.slab_bnd_normals = np.empty((self._n_samples,3),np.double)
+        self.slab_bnd_normals = np.empty((7,self._n_samples,3),np.double)
+
 
         self._slab_slice_mask = np.empty(self._n_samples, np.int8)
         self._reg_samples = np.empty((3,self._n_samples))
@@ -526,12 +529,12 @@ class EPIOnlineRealign(EPIOnlineResample):
         # compute values for initial registration
         self.apply_transform(
             last_reg,
-            self.bnd_coords, self.normals, self.slab_bnd_coords[0], self.slab_bnd_normals,
+            self.bnd_coords, self.normals, self.slab_bnd_coords[0], self.slab_bnd_normals[0],
             self.fmap_values, phase_dim=data1.shape[self.pe_dir])
         
-        self.slab_bnd_coords[1] = self.slab_bnd_coords[0] + self.slab_bnd_normals
-        self.slab_bnd_coords[2] = self.slab_bnd_coords[0] - self.slab_bnd_normals
-        self.resample(data1, self._reg_samples, self.slab_bnd_coords)
+        self.slab_bnd_coords[1] = self.slab_bnd_coords[0] + self.slab_bnd_normals[0]*self.bbr_shift
+        self.slab_bnd_coords[2] = self.slab_bnd_coords[0] - self.slab_bnd_normals[0]*self.bbr_shift
+        self.resample(data1, self._reg_samples, self.slab_bnd_coords[:3])
 
         self._samples_mask = np.ones(self._n_samples,dtype=np.bool)
         mm = self._samples_mask
@@ -563,12 +566,11 @@ class EPIOnlineRealign(EPIOnlineResample):
             self._samples_reliability[self._samples_reliability>1]=1
             
         # remove the samples with low reliability
-        mm[:] = self._samples_reliability > .5
+        #mm[:] = self._samples_reliability > .5
 
         # reestimate first frame registration  with only reliable samples using cg optimizer
         self.optimizer = 'cg'
         last_reg.param = self._register_slab(range(self.nslices), data1, last_reg)
-
         
         return last_reg, data1
 
@@ -619,15 +621,30 @@ class EPIOnlineRealign(EPIOnlineResample):
 
             convergence, niter = np.inf, 0
             new_reg.param = estim_state[:6]
-            self.sample_cost_jacobian(sl, sl_data, new_reg, force_recompute_subset=True)
+
+            #compute 2D gradient
+            sl_data = sl_data.astype(np.float32)
+            sl_data_gradient = np.zeros(sl_data.shape+(2,))
+            sl_data_gradient[1:-1,:,:,0] = sl_data[2:]-sl_data[:-2]
+            sl_data_gradient[:,1:-1,:,1] = sl_data[:,2:]-sl_data[:,:-2]
+            #normalize gradient
+            sl_data_gradient /= np.sqrt(sl_data_gradient**2).sum(-1)[..., np.newaxis]
+            sl_data_gradient[np.isnan(sl_data_gradient)]=0
+
+            #self.sample_cost_jacobian(sl, sl_data, new_reg, force_recompute_subset=True)
+            self.sample_gradient_cost_jacobian(sl, sl_data_gradient, new_reg, force_recompute_subset=True)
+
             if self._n_slab_samples < self.iekf_min_nsamples_per_slab:
                 print 'not enough points, skipping slab'
             else:
                 while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                     if niter>0:
                         new_reg.param = estim_state[:6]
-                        self.sample_cost_jacobian(sl, sl_data, new_reg)
+                        #self.sample_cost_jacobian(sl, sl_data, new_reg)
+                        self.sample_gradient_cost_jacobian(sl, sl_data_gradient, new_reg)
                     cost, jac = self._cost[0,mm], self._cost[1:,mm]
+                    if np.any(np.isnan(cost)):
+                        raise RuntimeError
 
                     S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mm])
                     kalman_gain = np.dual.solve(S, pred_covariance.dot(jac).T, check_finite=False).T
@@ -693,7 +710,116 @@ class EPIOnlineRealign(EPIOnlineResample):
         #add shift in phase encoding direction
         if isinstance(fmap_values, np.ndarray):
             out_coords[...,subset,self.pe_dir]+=fmap_values[...,subset]*phase_dim
+
+
+    def sample_gradient_cost_jacobian(self, slab, gradient, transform, force_recompute_subset=False):
+        sa = self.slice_axis
+        slice_axes = np.ones(3, np.bool)
+        slice_axes[sa] = False
+        mm = self._samples_mask
+        
+        epsilon = self.iekf_jacobian_epsilon
+        
+        self._update_gradient_subset(slab, transform, gradient.shape[:-1], force_recompute_subset=force_recompute_subset)
+        
+        for si, s in enumerate(slab):
+            mm[:] = self._slab_slice_mask==s
+            cnt = np.count_nonzero(mm)
+            if cnt>0:
+                # resample
+                grad_x = map_coordinates(
+                    gradient[...,si,0].astype(np.float),
+                    self.slab_bnd_coords[:,mm,:2].reshape(-1,2).T,
+                    order=self._interp_order).reshape(7,-1)
+                grad_y = map_coordinates(
+                    gradient[...,si,1].astype(np.float),
+                    self.slab_bnd_coords[:,mm,:2].reshape(-1,2).T,
+                    order=self._interp_order).reshape(7,-1)
+
+                projnorm = self.slab_bnd_normals[...,mm,:][...,slice_axes]
+                projnorm /= np.sqrt((projnorm**2).sum(-1))[...,np.newaxis]
+
+                self._cost[:,mm] = grad_x * projnorm[...,1] - grad_y * projnorm[...,0]
+                self._cost[1:,mm] -= self._cost[0,mm]
+                self._cost[1:,mm] /= - self.iekf_jacobian_epsilon
+                if np.any(np.isnan(self._cost[:,mm])):
+                    raise RuntimeError
+                
+
+
+    def _update_gradient_subset(self, slab, transform, shape, force_recompute_subset=False):
+        sa = self.slice_axis
+        mm = self._samples_mask
+
+        test_points = np.array([(x,y,z) for x in (0,shape[0]) for y in (0, shape[1]) for z in (0,self.nslices)])
+        recompute_subset = np.abs(
+            self._last_subsampling_transform.apply(test_points) -
+            transform.apply(test_points))[:,sa].max() > 0.05
+        
+        if recompute_subset or force_recompute_subset:
+            self.apply_transform(
+                transform,
+                self.bnd_coords,
+                self.normals,
+                self.slab_bnd_coords[0],
+                self.slab_bnd_normals[0],
+                self.fmap_values,
+                phase_dim=shape[self.pe_dir])
+            self._last_subsampling_transform = transform.copy()
+
+            self._slab_slice_mask.fill(-1)
+            self._samples_dist.fill(0)
+            for s in slab:
+                mm[:] = np.abs(self.slab_bnd_coords[0,..., self.slice_axis]-s) < .5
+                # remove vertex with normal perpendicular to slice
+                mm[np.abs(self.slab_bnd_normals[0,...,sa])>.85] = False
+                nsamp = np.count_nonzero(mm)
+                nsamples_per_slice = self.nsamples_per_slab/float(len(slab))
+                prop = nsamples_per_slice/float(nsamp+1)
+                #mm[mm] = np.random.random(nsamp) < prop
+                ## use the more reliable samples in subset
+                if prop < 1:
+                    mm[mm] = self._samples_reliability[mm] >= np.percentile(self._samples_reliability[mm],100*(1-prop))
+                nsamp = np.count_nonzero(mm)
+                prop = nsamples_per_slice/float(nsamp+1)
+                if prop <1:
+                    mm[mm] = np.random.random(nsamp) < prop
+                self._slab_slice_mask[mm] = s
+            mm[:] = self._slab_slice_mask >= 0
+
+            self._n_slab_samples = np.count_nonzero(mm)
+            print 'new subset %d'%self._n_slab_samples
+            if self._n_slab_samples < 1:
+                return
+        else:
+            self.apply_transform(
+                transform,
+                self.bnd_coords,
+                self.normals,
+                self.slab_bnd_coords[0],
+                self.slab_bnd_normals[0],
+                self.fmap_values,
+                mm,
+                phase_dim=shape[self.pe_dir])
+        # update jacobian coordinates for subset
+        for pi in range(len(transform.param)):
+            pc = transform.param
+            pc[pi] += self.iekf_jacobian_epsilon
+            t = transform.copy()
+            t.param = pc
+            self.apply_transform(
+                t,
+                self.bnd_coords,
+                self.normals,
+                self.slab_bnd_coords[pi+1],
+                self.slab_bnd_normals[pi+1],
+                self.fmap_values,
+                mm,
+                phase_dim=shape[self.pe_dir])
+        
     
+
+
     def sample_cost_jacobian(self, slab, data, transform, force_recompute_subset=False):
         # compute the cost and the jacobian for a given set of params
 
@@ -835,8 +961,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                 self.fmap_values,
                 mm,
                 phase_dim=shape[self.pe_dir])
-        self.slab_bnd_coords[1,mm] -= self.slab_bnd_normals[mm]
-        self.slab_bnd_coords[2,mm] += self.slab_bnd_normals[mm]
+        #self.slab_bnd_coords[1,mm] -= self.slab_bnd_normals[mm]
+        #self.slab_bnd_coords[2,mm] += self.slab_bnd_normals[mm]
 
         
     def sample_cost(self, slab, data, transform):
@@ -845,21 +971,27 @@ class EPIOnlineRealign(EPIOnlineResample):
             transform,
             self.bnd_coords,
             self.normals,
-            self.slab_bnd_coords,
-            self.slab_bnd_normals,
+            self.slab_bnd_coords[0],
+            self.slab_bnd_normals[0],
             self.fmap_values,
             phase_dim=data.shape[self.pe_dir])
 
-        self.slab_bnd_coords[1] -= self.slab_bnd_normals*self.bbr_shift
-        self.slab_bnd_coords[2] += self.slab_bnd_normals*self.bbr_shift
-        self.resample(data, self._reg_samples, self.slab_bnd_coords,order=self._interp_order)
+        self.slab_bnd_coords[1] = self.slab_bnd_coords[0] + self.slab_bnd_normals[0]*self.bbr_shift
+        self.slab_bnd_coords[2] = self.slab_bnd_coords[0] + self.slab_bnd_normals[0]*self.bbr_shift
+        self.resample(data, self._reg_samples, self.slab_bnd_coords[:3],order=self._interp_order)
         self._init_energy()
-        return np.abs(self._cost[0,~np.isnan(self._cost[0])]).mean()
+        #return np.abs(self._cost[0,~np.isnan(self._cost[0])]).mean()
+        return self._cost[0,self._samples_mask].mean()
 #        return np.abs(self._reg_samples[0,self._samples_mask]-.5).mean()
 
 
     def _init_energy(self):
-        self._cost[0] = np.tanh(.1*(-np.diff(self._reg_samples[:2],1,0)/np.diff(self._reg_samples[1:],1,0)-.5))
+        sm = self._reg_samples[1:].sum(0)
+        self._cost[0] = 200*np.diff(self._reg_samples[1:],1,0)/sm
+        self._cost[0,np.abs(sm)<1e-6] = 0
+        self._cost[0] = np.tanh(self.bbr_slope*self._cost[0]-self.bbr_offset)
+
+        #self._cost[0] = np.tanh(.01*(-np.diff(self._reg_samples[:2],1,0)/np.diff(self._reg_samples[1:],1,0)-.5))
 
     def set_fmin(self, optimizer, stepsize, **kwargs):
         """
