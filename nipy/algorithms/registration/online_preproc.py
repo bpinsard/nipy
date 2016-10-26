@@ -461,11 +461,18 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             data1 = self._first_frame
 
         self.register_refvol = data1 = data1.astype(DTYPE)
+        self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], data1)
+        if self._register_gradient:
+            #self.register_refvol = self.register_refvol - convolve1d(convolve1d(self.register_refvol, [1/3.]*3,0),[1/3.]*3,1)
+            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], data1)-\
+                                   reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], data1)
+
+        """
         if self._register_gradient:
             self.register_refvol = np.zeros((2,)+data1.shape, DTYPE)
             self.register_refvol[0,1:-1] = (data1[2:] - data1[:-2])/2.
             self.register_refvol[1,:,1:-1] = (data1[:,2:] - data1[:,:-2])/2.
-        
+        """
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
         self.nslices = stack.nslices
@@ -504,13 +511,17 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self.slices_pred_covariance = dict()
         self.tmp_states=[]
         while stack_has_data:
+
+            #if self.register_refvol is None:
+            #elif self.dynamic_ref and last 
+            
             
             pred_state = transition_matrix.dot(self.filtered_state_means[-1])
             estim_state = pred_state.copy()
             pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
-            #if not str(sl) in self.slices_pred_covariance:
-            #    self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
-            #pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
+            if not str(sl) in self.slices_pred_covariance:
+                self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
+            pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
             state_covariance = pred_covariance.copy()
 
             print 'frame %d slab %s'%(fr,str(sl)) + '_'*80
@@ -520,16 +531,17 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             new_reg.param = estim_state[:6]
 
             mean_cost = np.inf
-            #if self._register_gradient:
-                #slice_data_reg = sl_data / convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
+            if self._register_gradient:
+                #slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
                 # 2D DOG
-                #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
-                #                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
+                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
                 #slice_data_reg = np.zeros((2,)+sl_data.shape, dtype=DTYPE)
                 #slice_data_reg[0,1:-1] = sl_data[2:]-sl_data[:-2]
                 #slice_data_reg[1,:,1:-1] = sl_data[:,2:]-sl_data[:,:-2]
-            slice_data_reg = sl_data
-            #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], sl_data)
+            else:
+                #slice_data_reg = sl_data
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg)
@@ -546,7 +558,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 
                 estim_state_old = estim_state.copy()
                 estim_state[:] = estim_state + kalman_gain.dot(cost)
-
+                
                 mean_cost = (cost**2).mean()
                 self.tmp_states.append(estim_state-pred_state)
                 convergence = np.abs(estim_state_old-estim_state).max()
@@ -572,6 +584,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             print ('%.5f %.3f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
             print '_'*100 + '\n'
             yield fr, sl, self._anat_reg.dot(self.matrices[-1].dot(aff)), sl_data/self._bias
+            last_frame = fr
             try:
                 fr,sl,aff,tt,sl_data[:] = stack_it.next()
             except StopIteration:
@@ -584,7 +597,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
             self._slab_coords = np.zeros((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
-            if self._register_gradient:
+            if self._register_gradient and False:
                 self._interp_data = np.zeros((2,7,)+sl_data.shape, dtype=DTYPE)
             else:
                 self._interp_data = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
@@ -614,7 +627,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             order=0).reshape(sl_data.shape)>0
 
         #self._interp_data.fill(0)
-        if self._register_gradient:
+        if self._register_gradient and False:
             sl_data_grad = np.zeros((2,)+sl_data.shape, dtype=DTYPE)
             sl_data_grad[0,1:-1] = sl_data[2:]-sl_data[:-2]
             sl_data_grad[1,:,1:-1] = sl_data[:,2:]-sl_data[:,:-2]
@@ -635,6 +648,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
                                              self.iekf_jacobian_epsilon
             data_mask = np.logical_not(np.any(np.isnan(self._cost[:,self._slab_mask]),0))
+            self._slab_mask[self._slab_mask] = data_mask
+
         else:
             self._interp_data[:, self._slab_mask] = map_coordinates(
                 self.register_refvol, 
@@ -644,35 +659,37 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 cval=np.nan).reshape(7,-1)
 
             data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
-        self._slab_mask[self._slab_mask] = data_mask
-        self._nvox_in_slab_mask = self._slab_mask.sum()
-
-        if self._bias_correction:
-            self._slab_wm_weight[:] = map_coordinates(
-                self.wm_weight_data,
-                anat_slab_coords.reshape(-1,3).T,
-                order=0).reshape(sl_data.shape)
-            self._bias.fill(1)
-            weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
-            if sum(weight_per_slice) > len(weight_per_slice)*20:
+            self._slab_mask[self._slab_mask] = data_mask
+            
+            if self._bias_correction:
+                self._slab_wm_weight[:] = map_coordinates(
+                    self.wm_weight_data,
+                    anat_slab_coords.reshape(-1,3).T,
+                    order=0).reshape(sl_data.shape)
                 self._bias.fill(1)
-                sl_data_smooth = sl_data * self._slab_wm_weight
-                interp_data_smooth = self._interp_data[0] * self._slab_wm_weight            
-                # use separability of gaussian filter
-                for d in in_slice_axes:
-                    sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d, mode='constant')
-                    interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, mode='constant')
+                weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
+                if sum(weight_per_slice) > len(weight_per_slice)*20:
+                    self._bias.fill(1)
+                    sl_data_smooth = sl_data * self._slab_wm_weight
+                    interp_data_smooth = self._interp_data[0] * self._slab_wm_weight            
+                    # use separability of gaussian filter
+                    for d in in_slice_axes:
+                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d, mode='constant')
+                        interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, mode='constant')
                 
-                self._bias[:] = sl_data_smooth / interp_data_smooth
-                self._bias[interp_data_smooth<=0] = 1
-                self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
-                self._bias[...,weight_per_slice<20] = 1
-                sl_data /= self._bias
+                    self._bias[:] = sl_data_smooth / interp_data_smooth
+                    self._bias[interp_data_smooth<=0] = 1
+                    self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
+                    self._bias[...,weight_per_slice<20] = 1
+                    sl_data /= self._bias
+            self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
+            #self._cost[:,self._slab_mask] = np.tanh((sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])/100)
+            self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
+                                             self.iekf_jacobian_epsilon
+
+
+        self._nvox_in_slab_mask = self._slab_mask.sum()
         
-        #self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
-        #self._cost[:,self._slab_mask] = np.tanh((sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])/100)
-        #self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
-        #                                 self.iekf_jacobian_epsilon
 
     def correct(self, realigned, pvmaps, frame_shape, sig_smth=16, white_idx=1,
                 maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
