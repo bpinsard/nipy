@@ -670,13 +670,14 @@ class EPIOnlineRealign(EPIOnlineResample):
 
             #compute 2D gradient
             sl_data = sl_data.astype(np.float32)
-            sl_data_gradient = np.zeros(sl_data.shape+(2,))
-            sl_data_gradient[1:-1,:,:,0] = sl_data[2:]-sl_data[:-2]
-            sl_data_gradient[:,1:-1,:,1] = sl_data[:,2:]-sl_data[:,:-2]
+            #sl_data_gradient = np.zeros(sl_data.shape+(2,))
+            #sl_data_gradient[1:-1,:,:,0] = sl_data[2:]-sl_data[:-2]
+            #sl_data_gradient[:,1:-1,:,1] = sl_data[:,2:]-sl_data[:,:-2]
             #normalize gradient
             #sl_data_gradient /= np.sqrt(sl_data_gradient**2).sum(-1)[..., np.newaxis]
             #sl_data_gradient[np.isnan(sl_data_gradient)]=0
 
+            self.sl_data = sl_data
             self.sample_cost_jacobian(sl, sl_data, new_reg, force_recompute_subset=True)
             #self.sample_gradient_cost_jacobian(sl, sl_data_gradient, new_reg, force_recompute_subset=True)
 
