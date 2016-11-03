@@ -17,7 +17,7 @@ from scipy.ndimage.interpolation import map_coordinates
 from scipy.spatial import cKDTree as KDTree
 from scipy.interpolate import LinearNDInterpolator, interpn
 from .slice_motion import surface_to_samples, vertices_normals, compute_sigloss, intensity_factor
-
+import dipy.align.crosscorr
 
 import time
 import itertools
@@ -134,7 +134,7 @@ class EPIOnlineResample(object):
             else:
                 points = apply_affine(t, voxs[...,sl,:])
             dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=16)
-            not_inf = np.logical_not(np.isinf(dists))
+            not_inf = np.isfinite(dists)
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
@@ -381,6 +381,7 @@ class EPIOnlineResample(object):
 class OnlineRealignBiasCorrection(EPIOnlineResample):
     
     def __init__(self,
+                 anat,
                  mask,
                  anat_reg,
                  wm_weight = None,
@@ -432,7 +433,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  slice_thickness,
                  slice_axis)
         self._anat_reg = anat_reg
-        print(('init_reg params:\t' + '%.3f\ '*12)% tuple(Affine(self._anat_reg).param))
+        self._anat = anat
+        self._anat_data = self._anat.get_data()
+        self._init_param = Rigid(self._anat_reg, radius=RADIUS).param
+        print(('init_reg params:\t' + '%.3f\ '*6)% tuple(self._init_param))
         self.mask_data = self.mask.get_data()>0
 
         self._bias_correction = bias_correction
@@ -446,7 +450,33 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             else:
                 self.wm_weight_data = self.wm_weight.get_data()
 
+        self._ref_kdtree = None
 
+    def sample_ref(self, vol, coords, out, order=0, rbf_sigma=1):
+        if self._ref_kdtree is None:
+            ref_coords = apply_affine(self.mask.affine, np.argwhere(self.mask_data))
+            self._ref_kdtree = KDTree(ref_coords)
+        if order==0: # NN
+            dists, idx = self._ref_kdtree.query(coords, k=1, distance_upper_bound=1)
+            out.mask[:] = np.isinf(dists)
+            out.data[~out.mask] = vol[self.mask_data][idx[~out.mask]]
+        else: # RBF
+            dists, idx = self._ref_kdtree.query(coords, k=(rbf_sigma*3)**3, distance_upper_bound=rbf_sigma*3)
+            mask = np.isinf(dists)
+            idx[mask] = 0 # we keep them but their weights whould be zeros
+            weights = np.exp(-(dists/rbf_sigma)**2)
+            weights[weights<.05] = 0 #truncate
+            out.data[:] = (weights*vol[self.mask_data][idx]).sum(-1)/weights.sum(-1)
+            out.mask[:] = np.all(mask, -1)
+            
+    def sample_shift(self, vox_in, aff):
+        vox = apply_affine(np.linalg.inv(self.fieldmap_reg).dot(aff), vox_in)
+        return map_coordinates(
+            self.fmap.get_data(),
+            vox.reshape(-1,3).T,
+            order=1).reshape(vox_in.shape[:-1])
+    
+    
     def process(self, stack, ref_frame=None, yield_raw=False):
 
         # to check if allocation is done in _sample_cost_jacobian
@@ -459,13 +489,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         self._first_frame = self._first_frame.astype(DTYPE)
         
-        if self._register_gradient:
-            #self.register_refvol = ref_vol - convolve1d(convolve1d(ref_vol, [1/3.]*3,0),[1/3.]*3,1)
-            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], self._first_frame)-\
-                                   reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], self._first_frame)
-        else:
-            self.register_refvol = self._first_frame #reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], ref_vol)
-
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
         self.nslices = stack.nslices
@@ -480,7 +503,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             # transition_covariance[:6,6:] = np.eye(6)
             self.transition_covariance = transition_covariance[:ndim_state,:ndim_state]
 
-        initial_state_mean = np.zeros(ndim_state, dtype=DTYPE)
+        initial_state_mean = self._init_param
         initial_state_covariance = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
 
         stack_it = stack.iter_slabs()
@@ -536,6 +559,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
                 mask = self._slab_mask
                 cost, jac = self._cost[0,mask], self._cost[1:,mask]
+                if np.any(np.isnan(cost)):
+                    raise RuntimeError
 
                 S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mask.flatten()])
 
@@ -547,12 +572,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 #I_KH = np.eye(ndim_state) - np.dot(kalman_gain, jac.T)
                 #state_covariance[:] = np.dot(I_KH, state_covariance)
                 
-                mean_cost = (cost**2).mean()
+                mean_cost = (cost).mean()
                 self.tmp_states.append(estim_state-pred_state)
                 convergence = np.abs(estim_state_old-estim_state).max()
                 self.all_convergences.append(convergence)
                 niter += 1
-                print ("%.5f %.3f : "+"% 2.5f,"*6)%((convergence, mean_cost) +tuple(estim_state[:6]))
+                print ("%.5f %.5f : "+"% 2.5f,"*6)%((convergence, mean_cost) +tuple(estim_state[:6]))
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
@@ -573,7 +598,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.matrices.append(new_reg.as_affine())
             print 'nvox',self._nvox_in_slab_mask,'_'*100 + '\n'
             print 'update : ', ('% 2.5f,'*6)%tuple(update)
-            print ('%.5f %.3f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
+            print ('%.5f %.5f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
             print '_'*100 + '\n'
             yield fr, sl, self._anat_reg.dot(self.matrices[-1].dot(aff)), sl_data/self._bias
             last_frame = fr
@@ -588,11 +613,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
-            self._slab_coords = np.zeros((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
-            if self._register_gradient and False:
-                self._interp_data = np.zeros((2,7,)+sl_data.shape, dtype=DTYPE)
-            else:
-                self._interp_data = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
+            self._slab_coords = np.zeros((7,)+self._slab_vox_idx.shape, dtype=DTYPE)
+            self._interp_data = np.ma.array(
+                np.zeros((7,)+sl_data.shape , dtype=DTYPE), 
+                mask=np.zeros((7,)+sl_data.shape,dtype=np.bool))
             self._bias = np.ones(sl_data.shape, dtype=DTYPE)
             self._cost = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
             self._slab_mask = np.zeros(sl_data.shape, dtype=np.bool)
@@ -603,127 +627,40 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._slab_vox_idx[...,self.slice_axis] = np.asarray(sl)[[
             (slice(0,None) if self.slice_axis==d2 else None) for d2 in range(sl_data.ndim)]]
         
-        self._slab_coords[0] = apply_affine(new_reg.as_affine(), self._slab_vox_idx.reshape(-1,3))
+
+        shift = self.sample_shift(self._slab_vox_idx, new_reg.as_affine().dot(self.affine))
+
+
+        reg2anat = new_reg.as_affine().dot(self.affine)
+        anat_phase_vector = reg2anat[:3, self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
+        self._slab_coords[0] = apply_affine(reg2anat, self._slab_vox_idx) + shift[...,np.newaxis] * anat_phase_vector
+
+
         for pi in range(6):
             reg_delta = Rigid(radius=RADIUS)
             params = new_reg.param.copy()
             params[pi] += self.iekf_jacobian_epsilon
             reg_delta.param = params
-            self._slab_coords[pi+1] = apply_affine(reg_delta.as_affine(), self._slab_vox_idx.reshape(-1,3))
-
-        slab2anat = self._epi2anat.dot(new_reg.as_affine())
-        anat_slab_coords = apply_affine(slab2anat, self._slab_vox_idx)
-        #self._slab_mask[:] = self.inv_resample(self.mask, new_reg.as_affine(), sl_data.shape, order=-2)
+            reg2anat = reg_delta.as_affine().dot(self.affine)
+            anat_phase_vector = reg2anat[:3, self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
+            self._slab_coords[pi+1] = apply_affine(reg2anat, self._slab_vox_idx) + shift[...,np.newaxis] * anat_phase_vector
+            
+        self.sample_ref(self._anat_data, self._slab_coords, self._interp_data, order=1)
         
-        self._slab_mask[:] = map_coordinates(
-            self.mask_data,
-            anat_slab_coords.reshape(-1,3).T,
-            order=0).reshape(sl_data.shape)>0
+        factors = dipy.align.crosscorr.precompute_cc_factors_3d(self._interp_data[0], sl_data,1)
+        
+        prod_fac34 = np.prod(factors[...,3:],-1)
+        self._cost[0] = factors[...,2]**2/prod_fac34 - 1
+        # copied from dipy crosscorr for 6-gradient
+        self._cost[1:] = self._interp_data[1:]-self._interp_data[0]
+        self._cost[1:] *= -2/self.iekf_jacobian_epsilon *\
+                          factors[...,0]/prod_fac34*(factors[...,0]-factors[...,2]/factors[...,4]*factors[...,1])
+        del prod_fac34
 
-        #self._interp_data.fill(0)
-        if self._register_gradient and False:
-            sl_data_grad = np.zeros((2,)+sl_data.shape, dtype=DTYPE)
-            sl_data_grad[0,1:-1] = sl_data[2:]-sl_data[:-2]
-            sl_data_grad[1,:,1:-1] = sl_data[:,2:]-sl_data[:,:-2]
-            sl_data_grad /= np.sqrt((sl_data_grad**2).sum(0))
-            for di,d in enumerate(in_slice_axes):
-                self._interp_data[di][:, self._slab_mask] = map_coordinates(
-                    self.register_refvol[di],
-                    self._slab_coords[:,self._slab_mask.flatten(),:].reshape(-1,3).T,
-                    mode='constant',
-                    order=1,
-                    cval=np.nan).reshape(7,-1)
-            self._interp_data /= np.sqrt((self._interp_data**2).sum(0))
-            self._cost[:,self._slab_mask] = (
-                sl_data_grad[0,np.newaxis,self._slab_mask]*self._interp_data[1,:,self._slab_mask]-
-                sl_data_grad[1,np.newaxis,self._slab_mask]*self._interp_data[0,:,self._slab_mask]).T
-#            self._cost[:,self._slab_mask] = np.arcsin(np.sqrt(1-((sl_data_grad[:,np.newaxis,self._slab_mask]*
-#                                                                  self._interp_data[:,:,self._slab_mask]).sum(0))**2))
-            self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
-                                             self.iekf_jacobian_epsilon
-            data_mask = np.logical_not(np.any(np.isnan(self._cost[:,self._slab_mask]),0))
-            self._slab_mask[self._slab_mask] = data_mask
-
-        else:
-            self._interp_data[:, self._slab_mask] = map_coordinates(
-                self.register_refvol, 
-                self._slab_coords[:,self._slab_mask.flatten(),:].reshape(-1,3).T,
-                mode='constant',
-                order=1,
-                cval=np.nan).reshape(7,-1)
-
-            data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
-            self._slab_mask[self._slab_mask] = data_mask
-            
-            if self._bias_correction:
-                self._slab_wm_weight[:] = map_coordinates(
-                    self.wm_weight_data,
-                    anat_slab_coords.reshape(-1,3).T,
-                    order=0).reshape(sl_data.shape)
-                self._bias.fill(1)
-                weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
-                if sum(weight_per_slice) > len(weight_per_slice)*20:
-                    self._bias.fill(1)
-                    sl_data_smooth = sl_data * self._slab_wm_weight
-                    interp_data_smooth = self._interp_data[0] * self._slab_wm_weight            
-                    # use separability of gaussian filter
-                    for d in in_slice_axes:
-                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d, mode='constant')
-                        interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, mode='constant')
-                
-                    self._bias[:] = sl_data_smooth / interp_data_smooth
-                    self._bias[interp_data_smooth<=0] = 1
-                    self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
-                    self._bias[...,weight_per_slice<20] = 1
-                    sl_data /= self._bias
-            
-            self._cost[0,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[0,self._slab_mask])
-            self._cost[1:,self._slab_mask] = (self._interp_data[1:,self._slab_mask] - self._interp_data[0,self._slab_mask])/\
-                                             self.iekf_jacobian_epsilon
-
-            #self._cost[:,self._slab_mask] = (sl_data[self._slab_mask] - self._interp_data[:,self._slab_mask])
-            #self._cost[1:,self._slab_mask] = (self._cost[0,self._slab_mask]-self._cost[1:,self._slab_mask])/\
-            #                                 self.iekf_jacobian_epsilon
-
+        self._slab_mask[:] = ~np.any(self._interp_data.mask,0)
+        self._slab_mask[np.any(np.isnan(self._cost),0)] = False
         self._nvox_in_slab_mask = self._slab_mask.sum()
 
-
-
-    def _sample_anat_cost_jacobian(self, sl, sl_data, new_reg):
-        in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
-
-        if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
-            self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
-            self._slab_coords = np.zeros((7, np.prod(self._slab_vox_idx.shape[:-1]),sl_data.ndim), dtype=DTYPE)
-            if self._register_gradient and False:
-                self._interp_data = np.zeros((2,7,)+sl_data.shape, dtype=DTYPE)
-            else:
-                self._interp_data = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
-            self._bias = np.ones(sl_data.shape, dtype=DTYPE)
-            self._cost = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
-            self._slab_mask = np.zeros(sl_data.shape, dtype=np.bool)
-            self._slab_wm_weight = np.zeros(sl_data.shape, dtype=DTYPE)
-            for d in in_slice_axes:
-                self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
-                    (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
-        self._slab_vox_idx[...,self.slice_axis] = np.asarray(sl)[[
-            (slice(0,None) if self.slice_axis==d2 else None) for d2 in range(sl_data.ndim)]]
-        
-        self._slab_coords[0] = apply_affine(new_reg.as_affine(), self._slab_vox_idx.reshape(-1,3))
-        for pi in range(6):
-            reg_delta = Rigid(radius=RADIUS)
-            params = new_reg.param.copy()
-            params[pi] += self.iekf_jacobian_epsilon
-            reg_delta.param = params
-            self._slab_coords[pi+1] = apply_affine(reg_delta.as_affine(), self._slab_vox_idx.reshape(-1,3))
-
-        slab2anat = self._epi2anat.dot(new_reg.as_affine())
-        anat_slab_coords = apply_affine(slab2anat, self._slab_vox_idx)
-        self._slab_mask[:] = map_coordinates(
-            self.mask_data,
-            anat_slab_coords.reshape(-1,3).T,
-            order=0).reshape(sl_data.shape)>0
-        
 
     def correct2(self, realigned):
         
