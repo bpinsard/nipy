@@ -9,7 +9,7 @@ from ...core.image.image_spaces import (make_xyz_image,
 from .affine import Rigid, Affine, rotation_vec2mat, to_matrix44
 
 from .optimizer import configure_optimizer, use_derivatives
-from scipy.optimize import fmin_slsqp
+from scipy.optimize import fmin_slsqp, fmin_cg
 from scipy.ndimage import convolve1d, gaussian_filter, gaussian_filter1d, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
@@ -470,12 +470,50 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             out.mask[:] = np.all(mask, -1)
             
     def sample_shift(self, vox_in, aff):
-        vox = apply_affine(np.linalg.inv(self.fieldmap_reg).dot(aff), vox_in)
-        return map_coordinates(
+        vox = apply_affine(np.linalg.inv(self.fieldmap_reg.dot(self.fmap.affine)).dot(aff), vox_in)
+        shift = map_coordinates(
             self.fmap.get_data(),
             vox.reshape(-1,3).T,
-            order=1).reshape(vox_in.shape[:-1])
-    
+            order=3).reshape(vox_in.shape[:-1])
+        return shift
+
+    def process2(self, stack, yield_raw=False):
+
+        # to check if allocation is done in _sample_cost_jacobian
+        self._slab_vox_idx = None
+
+        self._last_sampled_reg = np.zeros(6)
+
+        stack_it = stack.iter_slabs()        
+        fr,sl,aff,tt,sl_data = stack_it.next()
+        self.sl_data = sl_data = sl_data.astype(DTYPE)
+        stack_has_data = True
+
+        new_reg = Rigid(self._anat_reg, radius=RADIUS)
+
+        while stack_has_data:            
+
+            def cost(pc):
+                if not np.allclose(self._last_sampled_reg,pc):
+                    reg = Rigid(radius=RADIUS)
+                    reg.param = pc
+                    self._sample_cost_jacobian(sl, sl_data, reg)
+                    self._last_sampled_reg = pc
+                return - self._cost[0,self._slab_mask].mean()
+            def jac(pc):
+                if not np.allclose(self._last_sampled_reg,pc):
+                    reg = Rigid(radius=RADIUS)
+                    reg.param = pc
+                    self._sample_cost_jacobian(sl, sl_data, reg)
+                    self._last_sampled_reg = pc
+                return - self._cost[1:,self._slab_mask].mean(1)
+            
+            params = fmin_cg(cost, new_reg.param, jac)
+
+            try:
+                fr,sl,aff,tt,sl_data[:] = stack_it.next()
+            except StopIteration:
+                stack_has_data = False
     
     def process(self, stack, ref_frame=None, yield_raw=False):
 
@@ -486,8 +524,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         #frame_iterator = stack.iter_frame()
         nvol, self.affine, self._first_frame = frame_iterator.next()
         self._epi2anat = np.linalg.inv(self.mask.affine).dot(self._anat_reg).dot(self.affine)
-
-        self._first_frame = self._first_frame.astype(DTYPE)
         
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -542,17 +578,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             new_reg.param = estim_state[:6]
 
             mean_cost = np.inf
-            if self._register_gradient:
-                #slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
-                # 2D DOG
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
-                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
-            else:
-                #slice_data_reg = sl_data
-                slice_data_reg = sl_data #reduce(lambda i,d: gaussian_filter1d(i,1,d), [0,1], sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
-                self._sample_cost_jacobian(sl, slice_data_reg, new_reg)
+                self._sample_cost_jacobian(sl, sl_data, new_reg)
                 if self._nvox_in_slab_mask < self.iekf_min_nsamples_per_slab:
                     print 'not enough point'
                     break
@@ -600,7 +628,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             print 'update : ', ('% 2.5f,'*6)%tuple(update)
             print ('%.5f %.5f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
             print '_'*100 + '\n'
-            yield fr, sl, self._anat_reg.dot(self.matrices[-1].dot(aff)), sl_data/self._bias
+            yield fr, sl, self.matrices[-1], sl_data/self._bias
             last_frame = fr
             try:
                 fr,sl,aff,tt,sl_data[:] = stack_it.next()
@@ -609,6 +637,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         
     def _sample_cost_jacobian(self, sl, sl_data, new_reg):
+
         in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
 
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
@@ -630,10 +659,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         shift = self.sample_shift(self._slab_vox_idx, new_reg.as_affine().dot(self.affine))
 
+        self.shift = shift
 
         reg2anat = new_reg.as_affine().dot(self.affine)
         anat_phase_vector = reg2anat[:3, self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
-        self._slab_coords[0] = apply_affine(reg2anat, self._slab_vox_idx) + shift[...,np.newaxis] * anat_phase_vector
+        self._slab_coords[0] = apply_affine(reg2anat, self._slab_vox_idx) - shift[...,np.newaxis] * anat_phase_vector
 
 
         for pi in range(6):
@@ -643,7 +673,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             reg_delta.param = params
             reg2anat = reg_delta.as_affine().dot(self.affine)
             anat_phase_vector = reg2anat[:3, self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
-            self._slab_coords[pi+1] = apply_affine(reg2anat, self._slab_vox_idx) + shift[...,np.newaxis] * anat_phase_vector
+            self._slab_coords[pi+1] = apply_affine(reg2anat, self._slab_vox_idx) - shift[...,np.newaxis] * anat_phase_vector
             
         self.sample_ref(self._anat_data, self._slab_coords, self._interp_data, order=1)
         
@@ -653,7 +683,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._cost[0] = factors[...,2]**2/prod_fac34 - 1
         # copied from dipy crosscorr for 6-gradient
         self._cost[1:] = self._interp_data[1:]-self._interp_data[0]
-        self._cost[1:] *= -2/self.iekf_jacobian_epsilon *\
+        self._cost[1:] *= 2/self.iekf_jacobian_epsilon *\
                           factors[...,0]/prod_fac34*(factors[...,0]-factors[...,2]/factors[...,4]*factors[...,1])
         del prod_fac34
 
