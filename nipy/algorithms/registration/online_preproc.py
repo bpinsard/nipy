@@ -734,21 +734,20 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 #self._slab_wm_weight *= self._slab_sigloss
                 weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
                 if sum(weight_per_slice) > len(weight_per_slice)*10:
-                    """
-                    slice_wm_mean = np.apply_over_axes(np.sum, sl_data*self._slab_wm_weight, in_slice_axes)/weight_per_slice
-                    sl_data_smooth = sl_data * self._slab_wm_weight
-                    mean_smooth = slice_wm_mean * self._slab_wm_weight
+                    smooth_wm_weight = self._slab_wm_weight.copy()
+                    log_ratio = np.log(sl_data/self._interp_data[0])*self._slab_wm_weight
+                    log_ratio[~np.isfinite(log_ratio)] = 0
+                    
+                    # use separability of gaussian filter
                     for d in in_slice_axes:
-                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d,
-                                                              mode='constant', truncate=10)
-                        mean_smooth[:] = gaussian_filter1d(mean_smooth, self._bias_sigma, d,
-                                                           mode='constant', truncate=10)
-                    self._bias[:] = sl_data_smooth/mean_smooth
+                        log_ratio[:] = gaussian_filter1d(log_ratio, self._bias_sigma, d,
+                                                         mode='constant', truncate=10)
+                        smooth_wm_weight[:] = gaussian_filter1d(smooth_wm_weight, self._bias_sigma, d, 
+                                                                mode='constant', truncate=10)
+                    self._bias[:] = np.exp(log_ratio/smooth_wm_weight)
+                    self._bias[~np.isfinite(self._bias)]=1
 
                     """
-                    self.bias2 = np.log(sl_data/self._interp_data[0])*self._slab_wm_weight
-                    self.bias2[np.isnan(self.bias2)] = 0
-                    smooth_wm_weight = self._slab_wm_weight.copy()
                     sl_data_smooth = sl_data * self._slab_wm_weight
                     interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
                     # use separability of gaussian filter
@@ -757,21 +756,17 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                                                               mode='constant', truncate=10)
                         interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, 
                                                                   mode='constant', truncate=10)
-                        self.bias2[:] = gaussian_filter1d(self.bias2, self._bias_sigma, d, 
-                                                          mode='constant', truncate=10)
-                        smooth_wm_weight[:] = gaussian_filter1d(smooth_wm_weight, self._bias_sigma, d, 
-                                                                mode='constant', truncate=10)
-                    self.bias2 /= smooth_wm_weight
                     self._bias[:] = sl_data_smooth / interp_data_smooth
                     self._bias[interp_data_smooth<=0] = 1
                     self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
                     self._bias[...,weight_per_slice<20] = 1
+                    """
                     
             self._cost[0,self._slab_mask] = (sl_data[self._slab_mask]/self._bias[self._slab_mask] - 
                                              self._interp_data[0,self._slab_mask])
             self._cost[1:,self._slab_mask] = (self._interp_data[1:,self._slab_mask] - self._interp_data[0,self._slab_mask])/\
                                              self.iekf_jacobian_epsilon
-
+            
         self._nvox_in_slab_mask = self._slab_mask.sum()
             
 
