@@ -23,7 +23,7 @@ import time
 import itertools
 
 # Module globals
-RADIUS = 50
+RADIUS = 100
 DTYPE = np.float32
 SLICE_ORDER = 'ascending'
 INTERLEAVED = None
@@ -135,7 +135,8 @@ class EPIOnlineResample(object):
                 if len(points) < 1:
                     continue
             else:
-                points = apply_affine(t, voxs[...,sl,:])
+                points = apply_affine(t, voxs[...,sl,:]).reshape(-1,3)
+                d = d.ravel()
             dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=16)
             not_inf = np.logical_not(np.isinf(dists))
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
@@ -501,8 +502,24 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], self._first_frame)-\
                                    reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], self._first_frame)
         else:
-            #self.register_refvol = self._first_frame
-            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], self._first_frame)
+            self.register_refvol = self._first_frame
+
+            """
+            anat_slab_coords = apply_affine(
+                self._anat_reg.dot(self.affine),
+                np.rollaxis(np.mgrid[[slice(None,d) for d in self.register_refvol.shape]],0,4))
+            wm_weight = np.zeros_like(self.register_refvol, dtype=DTYPE)
+            epi_mask = np.zeros_like(self.register_refvol, dtype=np.bool)
+            self.sample_ref(self.wm_weight_data_mask, anat_slab_coords, wm_weight, epi_mask, order=1)
+            wm_weight += epi_mask*1e-8 # takes average in slices without white matter
+            self._ref_norm = np.exp(
+                reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d, truncate=20), [0,1],
+                       np.log(self.register_refvol+1e-8)*wm_weight)/
+                reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d,truncate=20), [0,1], wm_weight))
+            self._ref_norm[np.isnan(self._ref_norm)] = np.nanmean(self._ref_norm)
+            self.register_refvol /= self._ref_norm
+            """
+            #self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], self._first_frame)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -563,8 +580,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
                                  reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
             else:
-                #slice_data_reg = sl_data
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], sl_data)
+                slice_data_reg = sl_data
+                #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg, bias_corr=self._bias_correction)
@@ -587,7 +604,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 convergence = np.abs(estim_state_old-estim_state).max()
                 self.all_convergences.append(convergence)
                 niter += 1
-                print ("%.5f %.3f : "+"% 2.5f,"*6)%((convergence, mean_cost) +tuple(estim_state[:6]))
+                print ("%.5f %.5f : "+"% 2.5f,"*6)%((convergence, mean_cost) +tuple(estim_state[:6]))
                 if niter==self.iekf_max_iter:
                     print "maximum iteration number exceeded"
 
@@ -608,10 +625,14 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.matrices.append(new_reg.as_affine())
             print 'nvox',self._nvox_in_slab_mask,'_'*100 + '\n'
             print 'update : ', ('% 2.5f,'*6)%tuple(update)
-            print ('%.5f %.3f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
+            print ('%.5f %.5f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
             print '_'*100 + '\n'
             self._sample_cost_jacobian(sl, sl_data, new_reg, bias_corr=True)
-            yield fr, sl, self._anat_reg.dot(aff).dot(self.matrices[-1]), sl_data/self._bias
+            slab2anat = self._anat_reg.dot(aff).dot(self.matrices[-1])
+            if yield_raw:
+                yield fr, sl, slab2anat, sl_data/self._bias
+            else:
+                yield fr, sl, slab2anat
             last_frame = fr
             self._bias.fill(1)
             try:
@@ -732,23 +753,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._slab_mask[self._slab_mask] = data_mask
             if bias_corr:
                 #self._slab_wm_weight *= self._slab_sigloss
+                #"""
                 weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
-                if sum(weight_per_slice) > len(weight_per_slice)*10:
-                    """
-                    slice_wm_mean = np.apply_over_axes(np.sum, sl_data*self._slab_wm_weight, in_slice_axes)/weight_per_slice
-                    sl_data_smooth = sl_data * self._slab_wm_weight
-                    mean_smooth = slice_wm_mean * self._slab_wm_weight
-                    for d in in_slice_axes:
-                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d,
-                                                              mode='constant', truncate=10)
-                        mean_smooth[:] = gaussian_filter1d(mean_smooth, self._bias_sigma, d,
-                                                           mode='constant', truncate=10)
-                    self._bias[:] = sl_data_smooth/mean_smooth
-
-                    """
-                    self.bias2 = np.log(sl_data/self._interp_data[0])*self._slab_wm_weight
-                    self.bias2[np.isnan(self.bias2)] = 0
-                    smooth_wm_weight = self._slab_wm_weight.copy()
+                if weight_per_slice.sum() > weight_per_slice.size*10:
                     sl_data_smooth = sl_data * self._slab_wm_weight
                     interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
                     # use separability of gaussian filter
@@ -757,21 +764,25 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                                                               mode='constant', truncate=10)
                         interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, 
                                                                   mode='constant', truncate=10)
-                        self.bias2[:] = gaussian_filter1d(self.bias2, self._bias_sigma, d, 
-                                                          mode='constant', truncate=10)
-                        smooth_wm_weight[:] = gaussian_filter1d(smooth_wm_weight, self._bias_sigma, d, 
-                                                                mode='constant', truncate=10)
-                    self.bias2 /= smooth_wm_weight
-                    self._bias[:] = sl_data_smooth / interp_data_smooth
+                    self._bias[:] = sl_data_smooth/interp_data_smooth
                     self._bias[interp_data_smooth<=0] = 1
                     self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
                     self._bias[...,weight_per_slice<20] = 1
-                    
+                """
+                self._slab_wm_weight += 1e-8*self._slab_mask
+                self._bias[:] = np.exp(
+                    reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d, truncate=10), [0,1], 
+                           np.log(sl_data+1e-8)*self._slab_wm_weight)/\
+                    reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d,truncate=10), [0,1], 
+                           self._slab_wm_weight))
+                """
             self._cost[0,self._slab_mask] = (sl_data[self._slab_mask]/self._bias[self._slab_mask] - 
                                              self._interp_data[0,self._slab_mask])
             self._cost[1:,self._slab_mask] = (self._interp_data[1:,self._slab_mask] - self._interp_data[0,self._slab_mask])/\
                                              self.iekf_jacobian_epsilon
-
+            
+        if np.any(~np.isfinite(self._cost)):
+            raise RuntimeError
         self._nvox_in_slab_mask = self._slab_mask.sum()
             
 
@@ -883,7 +894,7 @@ def filenames_to_dicoms(fnames):
 
 class NiftiIterator():
 
-    def __init__(self, nii):
+    def __init__(self, nii, mb=1):
         
         self.nii = nii
         self.nslices,self.nframes = self.nii.shape[2:4]
@@ -891,19 +902,31 @@ class NiftiIterator():
         self._voxel_size = np.asarray(self.nii.header.get_zooms()[:3])
         self._slice_order = np.arange(self.nslices)
         self._shape = self.nii.shape
-        self._slice_trigger_times = np.arange(self.nslices)*self.nii.header.get_zooms()[3]/float(self.nslices)
+        if mb == 1: 
+            self._nshots = self.nslices
+            self._slabs = [[s] for s in np.arange(self.nslices)]
+        else:
+            self._nshots = self.nslices / mb
+            nincr = 2
+            if self._nshots%2 == 0:
+                nincr = self._nshots/2 -1
+                if nincr%2 == 0:
+                    nincr -= 1
+            self._slabs = [(np.arange(mb)*self._nshots+sl).tolist() for sl in (np.arange(self._nshots)*nincr)%self._nshots]
+                
+        self._slab_trigger_times = np.arange(self._nshots)*self.nii.header.get_zooms()[3]/float(self._nshots)
         
-    def iter_frame(self, data=True):
+    def iter_frame(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
         for t in range(data.shape[3]):
             yield t, self.nii.affine, data[:,:,:,t]
         del data
 
-    def iter_slabs(self, data=True):
+    def iter_slabs(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
-        for t in range(data.shape[3]):
-            for s,tt in enumerate(self._slice_trigger_times):
-                yield t, [s], self.nii.affine, tt, data[:,:,s,t,np.newaxis]
+        for fr in range(data.shape[3]):
+            for sl,tt in zip(self._slabs, self._slab_trigger_times):
+                yield fr, sl, self.nii.affine, tt, data[:,:,sl,fr]
         del data
 
 def resample_mat_shape(mat,shape,voxsize):
