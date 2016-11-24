@@ -751,6 +751,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
             data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
             self._slab_mask[self._slab_mask] = data_mask
+            self._interp_data[:,~self._slab_mask] = 0
             if bias_corr:
                 #self._slab_wm_weight *= self._slab_sigloss
                 #"""
