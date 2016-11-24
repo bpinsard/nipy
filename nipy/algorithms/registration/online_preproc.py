@@ -135,7 +135,8 @@ class EPIOnlineResample(object):
                 if len(points) < 1:
                     continue
             else:
-                points = apply_affine(t, voxs[...,sl,:])
+                points = apply_affine(t, voxs[...,sl,:]).reshape(-1,3)
+                d = d.ravel()
             dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=16)
             not_inf = np.logical_not(np.isinf(dists))
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
@@ -754,7 +755,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 #self._slab_wm_weight *= self._slab_sigloss
                 #"""
                 weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
-                if sum(weight_per_slice) > len(weight_per_slice)*10:
+                if weight_per_slice.sum() > weight_per_slice.size*10:
                     sl_data_smooth = sl_data * self._slab_wm_weight
                     interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
                     # use separability of gaussian filter
@@ -906,7 +907,6 @@ class NiftiIterator():
             self._slabs = [[s] for s in np.arange(self.nslices)]
         else:
             self._nshots = self.nslices / mb
-            
             nincr = 2
             if self._nshots%2 == 0:
                 nincr = self._nshots/2 -1
@@ -914,19 +914,19 @@ class NiftiIterator():
                     nincr -= 1
             self._slabs = [(np.arange(mb)*self._nshots+sl).tolist() for sl in (np.arange(self._nshots)*nincr)%self._nshots]
                 
-        self._slice_trigger_times = np.arange(self._nshots)*self.nii.header.get_zooms()[3]/float(self._nshots)
+        self._slab_trigger_times = np.arange(self._nshots)*self.nii.header.get_zooms()[3]/float(self._nshots)
         
-    def iter_frame(self, data=True):
+    def iter_frame(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
         for t in range(data.shape[3]):
             yield t, self.nii.affine, data[:,:,:,t]
         del data
 
-    def iter_slabs(self, data=True):
+    def iter_slabs(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
-        for t in range(data.shape[3]):
-            for s,tt in enumerate(self._slice_trigger_times):
-                yield t, [s], self.nii.affine, tt, data[:,:,s,t,np.newaxis]
+        for fr in range(data.shape[3]):
+            for sl,tt in zip(self._slabs, self._slab_trigger_times):
+                yield fr, sl, self.nii.affine, tt, data[:,:,sl,fr]
         del data
 
 def resample_mat_shape(mat,shape,voxsize):
