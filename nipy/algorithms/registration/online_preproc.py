@@ -749,21 +749,23 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 order=1,
                 cval=np.nan).reshape(7,-1)
 
-            data_mask = np.logical_not(np.any(np.isnan(self._interp_data[:,self._slab_mask]),0))
-            self._slab_mask[self._slab_mask] = data_mask
-            self._interp_data[:,~self._slab_mask] = 0
+            data_mask = np.any(np.isnan(self._interp_data),0)
+            if np.count_nonzero(data_mask) > 0:
+                self._slab_mask *= ~data_mask
+                self._interp_data[:,data_mask] = 0
             if bias_corr:
                 #self._slab_wm_weight *= self._slab_sigloss
                 #"""
                 weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
                 if weight_per_slice.sum() > weight_per_slice.size*10:
-                    sl_data_smooth = sl_data * self._slab_wm_weight
-                    interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
+                    sl_data_smooth = sl_data * self._slab_wm_weight * self._slab_mask
+                    interp_data_smooth = self._interp_data[0] * self._slab_wm_weight * self._slab_mask
                     # use separability of gaussian filter
                     for d in in_slice_axes:
-                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, self._bias_sigma, d,
+                        bias_sigma_vox = self._bias_sigma/stack._voxel_size[d]
+                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, bias_sigma_vox, d,
                                                               mode='constant', truncate=10)
-                        interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, self._bias_sigma, d, 
+                        interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, bias_sigma_vox, d, 
                                                                   mode='constant', truncate=10)
                     self._bias[:] = sl_data_smooth/interp_data_smooth
                     self._bias[interp_data_smooth<=0] = 1
