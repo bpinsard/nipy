@@ -489,7 +489,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         # to check if allocation is done in _sample_cost_jacobian
         self._slab_vox_idx = None
-
+        self._voxel_size = stack._voxel_size
         frame_iterator = stack.iter_frame(queue_dicoms=True)
         #frame_iterator = stack.iter_frame()
         nvol, self.affine, self._first_frame = frame_iterator.next()
@@ -763,7 +763,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                     interp_data_smooth = self._interp_data[0] * self._slab_wm_weight * self._slab_mask
                     # use separability of gaussian filter
                     for d in in_slice_axes:
-                        bias_sigma_vox = self._bias_sigma/stack._voxel_size[d]
+                        bias_sigma_vox = self._bias_sigma/self._voxel_size[d]
                         sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, bias_sigma_vox, d,
                                                               mode='constant', truncate=10)
                         interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, bias_sigma_vox, d, 
