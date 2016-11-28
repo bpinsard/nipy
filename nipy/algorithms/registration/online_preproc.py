@@ -593,7 +593,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 cost, jac = self._cost[0,mask], self._cost[1:,mask]
 
                 S = jac.T.dot(pred_covariance.dot(jac))
-                S[np.diag_indices_from(S)] += self.observation_variance[mask]
+                S[np.diag_indices_from(S)] += self.iekf_observation_var#self.observation_variance[mask.ravel()]
 
                 kalman_gain = np.dual.solve(S, pred_covariance.dot(jac).T, check_finite=False).T
                 
