@@ -614,7 +614,8 @@ class EPIOnlineRealign(EPIOnlineResample):
                     if np.any(np.isnan(cost)):
                         raise RuntimeError
 
-                    S = jac.T.dot(pred_covariance).dot(jac) + np.diag(self.observation_variance[mm])
+                    S = jac.T.dot(pred_covariance.dot(jac))
+                    S[np.diag_indices_from(S)] += self.observation_variance[mm]
                     kalman_gain = np.dual.solve(S, pred_covariance.dot(jac).T, check_finite=False).T
 
                     estim_state_old = estim_state.copy()
@@ -664,24 +665,26 @@ class EPIOnlineRealign(EPIOnlineResample):
             sample_(pc)
             if self._n_slab_samples == 0:
                 return 0
-            cost = np.average(self._cost[0,self._samples_mask],
-                              weights=self._slab_samples_weight[self._samples_mask])
-            #cost = self._cost[0,self._samples_mask].mean()
-            print ('%2.5f :'+' %2.5f'*6)%((cost,)+tuple(pc))
+            #cost = np.average(self._cost[0,self._samples_mask],
+            #                  weights=self._slab_samples_weight[self._samples_mask])
+            cost = self._cost[0,self._samples_mask].mean()
             return cost
+        def itercb(pc):
+            cost = self._cost[0,self._samples_mask].mean()
+            print ('%2.5f :'+' %2.5f'*6)%((cost,)+tuple(pc))
         def fprime(pc):
             sample_(pc)
             if self._n_slab_samples == 0:
                 return [0]*6
-            jac = np.average(
-                (self._cost[1:,self._samples_mask]-self._cost[0,self._samples_mask])/self.iekf_jacobian_epsilon,
-                axis=1,
-                weights=self._slab_samples_weight[self._samples_mask])
-            #costs = self._cost[:,self._samples_mask].mean(1)
+            #jac = np.average(
+            #    (self._cost[1:,self._samples_mask]-self._cost[0,self._samples_mask])/self.iekf_jacobian_epsilon,
+            #    axis=1,
+            #    weights=self._slab_samples_weight[self._samples_mask])
+            jac = (self._cost[1:,self._samples_mask]-self._cost[0,self._samples_mask]).mean(1)/self.iekf_jacobian_epsilon
             #jac = (costs[1:]-costs[0])/self.iekf_jacobian_epsilon
             return jac
 
-        return fmin_cg(f, init_transform.param, fprime, gtol=1e-2, maxiter=1)
+        return fmin_cg(f, init_transform.param, fprime, gtol=1e-2, maxiter=8, callback=itercb)
             
     def apply_transform(self, transform, in_coords, in_vec, out_coords, out_vec,
                         fmap_values=None, subset=slice(None), phase_dim=64):
@@ -733,11 +736,11 @@ class EPIOnlineRealign(EPIOnlineResample):
 
 
 
-#        self._cost[:,mm] = -np.abs(np.arctan(np.squeeze(np.diff(self._samples[:,:2,mm],1,1)/\
-#                                                np.abs(np.diff(self._samples[:,2:,mm],1,1)))))
+        self._cost[:,mm] = -np.abs(np.arctan(np.squeeze(np.diff(self._samples[:,:2,mm],1,1)/\
+                                                np.abs(np.diff(self._samples[:,2:,mm],1,1)))))
         
-        self._cost[:,mm] = -np.abs(np.tanh(200*np.squeeze(np.diff(self._samples[:,:2,mm],1,1))/
-                                           self._samples[:,:2,mm].sum(1)))
+#        self._cost[:,mm] = -np.abs(np.tanh(200*np.squeeze(np.diff(self._samples[:,:2,mm],1,1))/
+#                                           self._samples[:,:2,mm].sum(1)))
 
     def _update_subset(self, slab, transform, shape, force_recompute_subset=False):
         sa = self.slice_axis
@@ -746,7 +749,7 @@ class EPIOnlineRealign(EPIOnlineResample):
         test_points = np.array([(x,y,z) for x in (0,shape[0]) for y in (0, shape[1]) for z in (0,self.nslices)])
         recompute_subset = np.abs(
             self._last_subsampling_transform.apply(test_points) -
-            transform.apply(test_points))[:,sa].max() > 0.02
+            transform.apply(test_points))[:,sa].max() > 0.05
         
         if recompute_subset or force_recompute_subset:
             self.apply_transform(
@@ -957,27 +960,39 @@ def filenames_to_dicoms(fnames):
 
 class NiftiIterator():
 
-    def __init__(self, nii):
+    def __init__(self, nii, mb=1):
         
         self.nii = nii
         self.nslices,self.nframes = self.nii.shape[2:4]
-        self._affine = self.nii.get_affine()
+        self._affine = self.nii.affine
         self._voxel_size = np.asarray(self.nii.header.get_zooms()[:3])
         self._slice_order = np.arange(self.nslices)
         self._shape = self.nii.shape
-        self._slice_trigger_times = np.arange(self.nslices)*self.nii.header.get_zooms()[3]/float(self.nslices)
+        if mb == 1: 
+            self._nshots = self.nslices
+            self._slabs = [[s] for s in np.arange(self.nslices)]
+        else:
+            self._nshots = self.nslices / mb
+            nincr = 2
+            if self._nshots%2 == 0:
+                nincr = self._nshots/2 -1
+                if nincr%2 == 0:
+                    nincr -= 1
+            self._slabs = [(np.arange(mb)*self._nshots+sl).tolist() for sl in (np.arange(self._nshots)*nincr)%self._nshots]
+                
+        self._slab_trigger_times = np.arange(self._nshots)*self.nii.header.get_zooms()[3]/float(self._nshots)
         
-    def iter_frame(self, data=True):
+    def iter_frame(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
         for t in range(data.shape[3]):
-            yield t, self.nii.get_affine(), data[:,:,:,t]
+            yield t, self.nii.affine, data[:,:,:,t]
         del data
 
-    def iter_slabs(self, data=True):
+    def iter_slabs(self, data=True, queue_dicoms=False):
         data = self.nii.get_data()
-        for t in range(data.shape[3]):
-            for s,tt in enumerate(self._slice_trigger_times):
-                yield t, [s], self.nii.get_affine(), tt, data[:,:,s,t,np.newaxis]
+        for fr in range(data.shape[3]):
+            for sl,tt in zip(self._slabs, self._slab_trigger_times):
+                yield fr, sl, self.nii.affine, tt, data[:,:,sl,fr]
         del data
 
 def resample_mat_shape(mat,shape,voxsize):
