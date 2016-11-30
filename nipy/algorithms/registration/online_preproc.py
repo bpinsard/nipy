@@ -149,7 +149,6 @@ class EPIOnlineResample(object):
             np.add.at(out, idx, d[idx2]*weights)
             np.add.at(out_weights, idx, weights)
         out /= out_weights
-        print np.count_nonzero(out_weights==0)
         out[np.isinf(out)] = np.nan
 
 
@@ -436,7 +435,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  slice_thickness,
                  slice_axis)
         self._anat_reg = anat_reg
-        print(('init_reg params:\t' + '%.3f\ '*12)% tuple(Affine(self._anat_reg).param))
+        print(('init_reg params:' + '\t%.3f'*12)% tuple(Affine(self._anat_reg).param))
         self.mask_data = self.mask.get_data()>0
 
         self._bias_correction = bias_correction
@@ -489,9 +488,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         # to check if allocation is done in _sample_cost_jacobian
         self._slab_vox_idx = None
-        self._voxel_size = stack._voxel_size
         frame_iterator = stack.iter_frame(queue_dicoms=True)
+        self._voxel_size = stack._voxel_size
         #frame_iterator = stack.iter_frame()
+        in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
         nvol, self.affine, self._first_frame = frame_iterator.next()
         self._epi2anat = np.linalg.inv(self.mask.affine).dot(self._anat_reg).dot(self.affine)
 
@@ -499,8 +499,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         
         if self._register_gradient:
             #self.register_refvol = ref_vol - convolve1d(convolve1d(ref_vol, [1/3.]*3,0),[1/3.]*3,1)
-            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], self._first_frame)-\
-                                   reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], self._first_frame)
+            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d),
+                                          in_slice_axes, self._first_frame)-\
+                                   reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), 
+                                          in_slice_axes, self._first_frame)
         else:
             self.register_refvol = self._first_frame
 
@@ -519,7 +521,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._ref_norm[np.isnan(self._ref_norm)] = np.nanmean(self._ref_norm)
             self.register_refvol /= self._ref_norm
             """
-            #self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], self._first_frame)
+            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), in_slice_axes, self._first_frame)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -577,11 +579,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             if self._register_gradient:
                 #slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
                 # 2D DOG
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), [0,1], sl_data)-\
-                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), [0,1], sl_data)
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), in_slice_axes, sl_data)-\
+                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), in_slice_axes, sl_data)
             else:
-                slice_data_reg = sl_data
-                #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), [0,1], sl_data)
+                #slice_data_reg = sl_data
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), in_slice_axes, sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg, bias_corr=self._bias_correction)
