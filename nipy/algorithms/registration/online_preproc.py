@@ -59,8 +59,7 @@ class EPIOnlineResample(object):
         self.fieldmap_reg = fieldmap_reg
 
         self.slice_axis = slice_axis
-        self.in_slice_axes = np.ones(3, np.bool)
-        self.in_slice_axes[self.slice_axis] = False
+        self.in_slice_axes = [d for d in range(3) if d!= self.slice_axis]
 
 
         self.slice_order = slice_order
@@ -473,6 +472,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             data_out[:] = (weights*vol_data_masked[idx]).sum(-1)/weights.sum(-1)
             data_out[np.isnan(data_out)] = fill_value
             mask[:] = dists.min(-1)<1
+            data_out[~mask] = fill_value
             
             
     def sample_shift(self, vox_in, aff):
@@ -491,7 +491,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         frame_iterator = stack.iter_frame(queue_dicoms=True)
         self._voxel_size = stack._voxel_size
         #frame_iterator = stack.iter_frame()
-        in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
         nvol, self.affine, self._first_frame = frame_iterator.next()
         self._epi2anat = np.linalg.inv(self.mask.affine).dot(self._anat_reg).dot(self.affine)
 
@@ -500,9 +499,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         if self._register_gradient:
             #self.register_refvol = ref_vol - convolve1d(convolve1d(ref_vol, [1/3.]*3,0),[1/3.]*3,1)
             self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d),
-                                          in_slice_axes, self._first_frame)-\
+                                          self.in_slice_axes, self._first_frame)-\
                                    reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), 
-                                          in_slice_axes, self._first_frame)
+                                          self.in_slice_axes, self._first_frame)
         else:
             self.register_refvol = self._first_frame
 
@@ -521,7 +520,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._ref_norm[np.isnan(self._ref_norm)] = np.nanmean(self._ref_norm)
             self.register_refvol /= self._ref_norm
             """
-            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), in_slice_axes, self._first_frame)
+            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, self._first_frame)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -579,11 +578,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             if self._register_gradient:
                 #slice_data_reg = sl_data - convolve1d(convolve1d(sl_data, [1/3.]*3,0),[1/3.]*3,1)
                 # 2D DOG
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), in_slice_axes, sl_data)-\
-                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), in_slice_axes, sl_data)
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), self.in_slice_axes, sl_data)-\
+                                 reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), self.in_slice_axes, sl_data)
             else:
                 #slice_data_reg = sl_data
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), in_slice_axes, sl_data)
+                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg, bias_corr=self._bias_correction)
@@ -645,12 +644,11 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
         
     def _sample_cost_jacobian(self, sl, sl_data, new_reg, bias_corr=False):
-        in_slice_axes = [d for d in range(sl_data.ndim) if d!= self.slice_axis]
 
         if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
             self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
             ## set vox idx for in-plane, does not change with slab
-            for d in in_slice_axes:
+            for d in self.in_slice_axes:
                 self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
                     (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
 
@@ -756,32 +754,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             if np.count_nonzero(data_mask) > 0:
                 self._slab_mask *= ~data_mask
                 self._interp_data[:,data_mask] = 0
+                self._slab_wm_weight *= self._slab_mask
             if bias_corr:
                 #self._slab_wm_weight *= self._slab_sigloss
                 #"""
-                weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, in_slice_axes)
-                if weight_per_slice.sum() > weight_per_slice.size*10:
-                    sl_data_smooth = sl_data * self._slab_wm_weight * self._slab_mask
-                    interp_data_smooth = self._interp_data[0] * self._slab_wm_weight * self._slab_mask
-                    # use separability of gaussian filter
-                    for d in in_slice_axes:
-                        bias_sigma_vox = self._bias_sigma/self._voxel_size[d]
-                        sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, bias_sigma_vox, d,
-                                                              mode='constant', truncate=10)
-                        interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, bias_sigma_vox, d, 
-                                                                  mode='constant', truncate=10)
-                    self._bias[:] = sl_data_smooth/interp_data_smooth
-                    self._bias[interp_data_smooth<=0] = 1
-                    self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
-                    self._bias[...,weight_per_slice<20] = 1
-                """
-                self._slab_wm_weight += 1e-8*self._slab_mask
-                self._bias[:] = np.exp(
-                    reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d, truncate=10), [0,1], 
-                           np.log(sl_data+1e-8)*self._slab_wm_weight)/\
-                    reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d,truncate=10), [0,1], 
-                           self._slab_wm_weight))
-                """
+                self._fit_bias_gaussian(sl_data)
+                #self._fit_bias_poly(sl, sl_data)
             self._cost[0,self._slab_mask] = (sl_data[self._slab_mask]/self._bias[self._slab_mask] - 
                                              self._interp_data[0,self._slab_mask])
             self._cost[1:,self._slab_mask] = (self._interp_data[1:,self._slab_mask] - self._interp_data[0,self._slab_mask])/\
@@ -790,7 +768,52 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         if np.any(~np.isfinite(self._cost)):
             raise RuntimeError
         self._nvox_in_slab_mask = self._slab_mask.sum()
-            
+    
+    def _fit_bias_spline(self, slab, sl_data):
+        pass
+
+    def _fit_bias_poly(self, slab, sl_data, bias_order=3):
+        ### not working
+        if not hasattr(self, '_polyvander'):
+            self._polyvander = np.polynomial.polynomial.polyvander2d(
+                *np.mgrid[[slice(-(sl_data.shape[a]-1)/2,sl_data.shape[a]/2) for a in self.in_slice_axes ]],
+                deg=[bias_order]*2)
+            self._polyvander /= np.sqrt(np.square(self._polyvander.reshape(-1,self._polyvander.shape[-1])).sum(0))
+        for sli,sln in enumerate(slab):
+            if self._slab_wm_weight[...,sli].sum() < 50:
+                self._bias[...,sli] = 1
+                continue
+            reg = self._polyvander * np.sqrt(self._slab_wm_weight[...,sli,np.newaxis])
+            y = sl_data[...,sli]/self._interp_data[0,...,sli] * np.sqrt(self._slab_wm_weight[...,sli])
+            c, resids, rank, s = np.linalg.lstsq(reg[self._slab_mask[...,sli]], y[self._slab_mask[...,sli]])
+            self._bias[...,sli] = self._polyvander.dot(c)
+
+
+    def _fit_bias_gaussian(self, sl_data):
+        weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, self.in_slice_axes)
+        sl_data_smooth = sl_data * self._slab_wm_weight
+        interp_data_smooth = self._interp_data[0] * self._slab_wm_weight * self._slab_mask
+        # use separability of gaussian filter
+        for d in self.in_slice_axes:
+            bias_sigma_vox = self._bias_sigma/self._voxel_size[d]
+            truncate = sl_data.shape[d]/bias_sigma_vox
+            sl_data_smooth[:] = gaussian_filter1d(sl_data_smooth, bias_sigma_vox, d,
+                                                  mode='constant', truncate=truncate)
+            interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, bias_sigma_vox, d, 
+                                                      mode='constant', truncate=truncate)
+        self._bias[:] = sl_data_smooth/interp_data_smooth
+        self._bias[interp_data_smooth<=0] = 1
+        self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
+        self._bias[...,weight_per_slice<50] = 1
+        """
+        self._slab_wm_weight += 1e-8*self._slab_mask
+        self._bias[:] = np.exp(
+        reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d, truncate=10), [0,1], 
+        np.log(sl_data+1e-8)*self._slab_wm_weight)/\
+        reduce(lambda i,d: gaussian_filter1d(i,self._bias_sigma,d,truncate=10), [0,1], 
+        self._slab_wm_weight))
+        """
+        
 
     def correct(self, realigned, pvmaps, frame_shape, sig_smth=16, white_idx=1,
                 maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
