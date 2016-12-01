@@ -759,6 +759,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 #self._slab_wm_weight *= self._slab_sigloss
                 #"""
                 self._fit_bias_gaussian(sl_data)
+                #self._fit_bias_spline(sl, sl_data)
                 #self._fit_bias_poly(sl, sl_data)
             self._cost[0,self._slab_mask] = (sl_data[self._slab_mask]/self._bias[self._slab_mask] - 
                                              self._interp_data[0,self._slab_mask])
@@ -770,7 +771,24 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._nvox_in_slab_mask = self._slab_mask.sum()
     
     def _fit_bias_spline(self, slab, sl_data):
-        pass
+        ratio = sl_data/self._interp_data[0]
+        self._slab_wm_weight[~np.isfinite(ratio)]=0
+        for sli, sln in enumerate(slab):
+            wm_voxs = np.where(self._slab_wm_weight[...,sli]>0)
+            if len(wm_voxs[0])<32:
+                self._bias[...,sli] = 1
+                continue
+            brain_voxs = np.where(self._slab_mask[...,sli]>0)
+            from scipy.interpolate import bisplrep, bisplev, SmoothBivariateSpline
+            sbvs = SmoothBivariateSpline(
+                wm_voxs[0],wm_voxs[1], ratio[...,sli][wm_voxs],
+                self._slab_wm_weight[...,sli][wm_voxs],
+                [0,sl_data.shape[0],0,sl_data.shape[1]],
+                kx=2,ky=2,
+                s=32)
+            self._bias[...,sli] = sbvs(np.arange(sl_data.shape[0]),np.arange(sl_data.shape[1]))
+            
+            
 
     def _fit_bias_poly(self, slab, sl_data, bias_order=3):
         ### not working
@@ -792,7 +810,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
     def _fit_bias_gaussian(self, sl_data):
         weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, self.in_slice_axes)
         sl_data_smooth = sl_data * self._slab_wm_weight
-        interp_data_smooth = self._interp_data[0] * self._slab_wm_weight * self._slab_mask
+        interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
         # use separability of gaussian filter
         for d in self.in_slice_axes:
             bias_sigma_vox = self._bias_sigma/self._voxel_size[d]
@@ -801,9 +819,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                                                   mode='constant', truncate=truncate)
             interp_data_smooth[:] = gaussian_filter1d(interp_data_smooth, bias_sigma_vox, d, 
                                                       mode='constant', truncate=truncate)
-        self._bias[:] = sl_data_smooth/interp_data_smooth
-        self._bias[interp_data_smooth<=0] = 1
-        self._bias[np.logical_or(np.isnan(self._bias),np.isinf(self._bias))] = 1
+        self._bias[:] = sl_data_smooth / interp_data_smooth
+        self._bias[~np.isfinite(self._bias)] = 1
         self._bias[...,weight_per_slice<50] = 1
         """
         self._slab_wm_weight += 1e-8*self._slab_mask
