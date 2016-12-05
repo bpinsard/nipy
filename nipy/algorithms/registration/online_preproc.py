@@ -520,7 +520,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._ref_norm[np.isnan(self._ref_norm)] = np.nanmean(self._ref_norm)
             self.register_refvol /= self._ref_norm
             """
-            self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, self._first_frame)
+            #self.register_refvol = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, self._first_frame)
 
         self.slice_order = stack._slice_order
         inv_slice_order = np.argsort(self.slice_order)
@@ -581,8 +581,8 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[0],d), self.in_slice_axes, sl_data)-\
                                  reduce(lambda i,d: gaussian_filter1d(i,self._dog_sigmas[1],d), self.in_slice_axes, sl_data)
             else:
-                #slice_data_reg = sl_data
-                slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, sl_data)
+                slice_data_reg = sl_data
+                #slice_data_reg = reduce(lambda i,d: gaussian_filter1d(i,.5,d), self.in_slice_axes, sl_data)
             while convergence > self.iekf_convergence and niter < self.iekf_max_iter:
                 new_reg.param = estim_state[:6]
                 self._sample_cost_jacobian(sl, slice_data_reg, new_reg, bias_corr=self._bias_correction)
