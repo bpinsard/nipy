@@ -636,7 +636,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             else:
                 yield fr, sl, slab2anat
             last_frame = fr
-            self._bias.fill(1)
+            self._bias.fill(1.0)
             try:
                 fr,sl,aff,tt,sl_data[:] = stack_it.next()
             except StopIteration:
@@ -808,7 +808,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
 
     def _fit_bias_gaussian(self, sl_data):
-        weight_per_slice = np.apply_over_axes(np.sum, self._slab_wm_weight, self.in_slice_axes)
+        weight_per_slice = np.atleast_1d(np.squeeze(np.apply_over_axes(np.sum, self._slab_wm_weight, self.in_slice_axes)))
         sl_data_smooth = sl_data * self._slab_wm_weight
         interp_data_smooth = self._interp_data[0] * self._slab_wm_weight
         # use separability of gaussian filter
@@ -821,7 +821,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                                                       mode='constant', truncate=truncate)
         self._bias[:] = sl_data_smooth / interp_data_smooth
         self._bias[~np.isfinite(self._bias)] = 1
-        self._bias[...,weight_per_slice<50] = 1
+        self._bias[...,weight_per_slice<self.iekf_min_nsamples_per_slab] = 1
         """
         self._slab_wm_weight += 1e-8*self._slab_mask
         self._bias[:] = np.exp(
