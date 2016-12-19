@@ -10,6 +10,7 @@ from .affine import Rigid, Affine, rotation_vec2mat, to_matrix44
 
 from .optimizer import configure_optimizer, use_derivatives
 from scipy.optimize import fmin_slsqp
+from scipy import interp
 from scipy.ndimage import convolve1d, gaussian_filter, gaussian_filter1d, binary_erosion, binary_dilation
 import scipy.stats, scipy.sparse
 from scipy.ndimage.interpolation import map_coordinates
@@ -53,9 +54,12 @@ class EPIOnlineResample(object):
                  slice_trigger_times=None,
                  slice_thickness=None,
                  slice_axis=2,
-                 recenter_fmap_data=True):
+                 recenter_fmap_data=False,
+                 unmask_fmap=False):
+
 
         self.fmap, self.mask = fieldmap, mask
+        self.mask_data = self.mask.get_data()>0
         self.fieldmap_reg = fieldmap_reg
 
         self.slice_axis = slice_axis
@@ -65,6 +69,7 @@ class EPIOnlineResample(object):
         self.slice_order = slice_order
         self.pe_sign = int(phase_encoding_dir > 0)*2-1
         self.pe_dir = abs(phase_encoding_dir)-1
+        self.fe_dir = [d for d in range(3) if d!=self.slice_axis and d!=self.pe_dir][0]
         self.repetition_time = repetition_time
         self.echo_time = echo_time
         self.slice_tr = slice_repetition_time
@@ -74,6 +79,7 @@ class EPIOnlineResample(object):
 
         if self.fmap is not None:
             self.recenter_fmap_data = recenter_fmap_data
+            self._unmask_fmap = unmask_fmap
             self._preproc_fmap()
 
         self.fmap_scale = self.pe_sign*echo_spacing/2.0/np.pi
@@ -118,7 +124,7 @@ class EPIOnlineResample(object):
 
         if mask:
             epi_mask = self.inv_resample(self.mask, transforms[len(transforms)/2],
-                                         vol_shape, -1, self.mask.get_data()>0)>0
+                                         vol_shape, -1, self.mask_data)>0
 
         if not pve_map is None:
             epi_pvf = self.inv_resample(
@@ -166,7 +172,7 @@ class EPIOnlineResample(object):
         phase_vec /= np.linalg.norm(phase_vec)
         epi_mask = slice(0, None)
         if mask:
-            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1, self.mask.get_data()>0)>0
+            epi_mask = self.inv_resample(self.mask, transforms[0], vol.shape, -1, self.mask_data)>0
             #epi_mask[:] = binary_dilation(epi_mask, iterations=1)
             points = points[epi_mask]
         if not self.fmap is None:
@@ -208,6 +214,14 @@ class EPIOnlineResample(object):
             out[rng,4] = gm[mask]
             out[rng,5] = data[mask]
             idx += nsamp
+    
+    def _slice(self, pe_dir=slice(None), fe_dir=slice(None), slice_axis=slice(None)):
+        slices = [None,]*3
+        slices[self.pe_dir] = pe_dir
+        slices[self.fe_dir] = fe_dir
+        slices[self.slice_axis] = slice_axis
+        return tuple(slices)
+        
 
     def _preproc_fmap(self):
         if self.fieldmap_reg is None:
@@ -218,14 +232,37 @@ class EPIOnlineResample(object):
             np.linalg.inv(self.mask.affine).dot(self.fmap2world),
             np.rollaxis(np.mgrid[[slice(0,n) for n in self.fmap.shape]],0,4))
         self.fmap_mask = map_coordinates(
-            self.mask.get_data(),
+            self.mask_data,
             grid.reshape(-1,3).T, order=0).reshape(self.fmap.shape) > 0
         fmap_data = self.fmap.get_data()
         if self.recenter_fmap_data: #recenter the fieldmap range to avoid shift
             fmap_data -= fmap_data[self.fmap_mask].mean()
-        ## extend fmap values out of mask
-        #fmap_data[~self.fmap_mask] = 0
-        #self.pe_dir
+        if self._unmask_fmap:
+            fmap_unmask = np.empty_like(fmap_data)
+            fmap_unmask.fill(np.nan)
+            for sl in range(fmap_data.shape[self.slice_axis]):
+                for fe in range(fmap_data.shape[self.fe_dir]):
+                    line_slice = self._slice(slice_axis=sl,fe_dir=fe)
+                    line_mask = self.fmap_mask[line_slice]
+                    if np.count_nonzero(line_mask)>0:
+                        fmap_unmask[line_slice] = interp(
+                            range(fmap_data.shape[self.pe_dir]),
+                            np.argwhere(line_mask).ravel(),
+                            fmap_data[self._slice(slice_axis=sl,fe_dir=fe,pe_dir=line_mask)])
+                for pe in range(fmap_data.shape[self.pe_dir]):
+                    line_slice = self._slice(slice_axis=sl,pe_dir=pe)
+                    line_mask = np.isfinite(fmap_unmask[line_slice])
+                    if np.count_nonzero(line_mask)>0:
+                        fmap_unmask[line_slice] = interp(
+                            range(fmap_data.shape[self.fe_dir]),
+                            np.argwhere(line_mask).ravel(),
+                            fmap_unmask[self._slice(slice_axis=sl,pe_dir=pe,fe_dir=line_mask)])
+            sa_mask = np.argwhere(np.apply_over_axes(np.sum,self.fmap_mask,self.in_slice_axes).ravel()>0).ravel()
+            fmap_unmask[self._slice(slice_axis=slice(None,sa_mask[0]))] = \
+                fmap_unmask[self._slice(slice_axis=sa_mask[:1])]
+            fmap_unmask[self._slice(slice_axis=slice(sa_mask[-1]+1,None))] = \
+                fmap_unmask[self._slice(slice_axis=sa_mask[-1:])]
+            fmap_data[:] = fmap_unmask
         self.fmap = nb.Nifti1Image(fmap_data, self.fmap.affine)
 
     def _precompute_sample_fmap(self, coords, shape):
@@ -383,26 +420,12 @@ class EPIOnlineResample(object):
 class OnlineRealignBiasCorrection(EPIOnlineResample):
     
     def __init__(self,
-                 mask,
                  anat_reg,
                  wm_weight = None,
                  bias_correction = True,
                  bias_sigma = 8,
                  register_gradient = False,
                  dog_sigmas = [1,2],
-                 fieldmap = None,
-                 fieldmap_reg = None,
-
-                 phase_encoding_dir = 1,
-                 repetition_time = 3.0,
-                 slice_repetition_time = None,
-                 echo_time = 0.03,
-                 echo_spacing = 0.0005,
-                 slice_order = None,
-                 interleaved = 0,
-                 slice_trigger_times = None,
-                 slice_thickness = None,
-                 slice_axis = 2,
 
                  iekf_min_nsamples_per_slab = 200,
                  iekf_jacobian_epsilon = 1e-3,
@@ -410,7 +433,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                  iekf_max_iter = 8,
                  iekf_observation_var = 1,
                  iekf_transition_cov = 1e-3,
-                 iekf_init_state_cov = 1e-3):
+                 iekf_init_state_cov = 1e-3,
+                 **kwargs):
+
+        print kwargs
 
         self.iekf_min_nsamples_per_slab = iekf_min_nsamples_per_slab
         self.iekf_jacobian_epsilon = iekf_jacobian_epsilon
@@ -420,22 +446,9 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self.iekf_transition_cov = iekf_transition_cov
         self.iekf_init_state_cov = iekf_init_state_cov
 
-        super(OnlineRealignBiasCorrection,self).__init__(
-                 fieldmap,fieldmap_reg,
-                 mask,
-                 phase_encoding_dir ,
-                 repetition_time,
-                 slice_repetition_time,
-                 echo_time,
-                 echo_spacing,
-                 slice_order,
-                 interleaved,
-                 slice_trigger_times,
-                 slice_thickness,
-                 slice_axis)
+        super(OnlineRealignBiasCorrection,self).__init__(**kwargs)
         self._anat_reg = anat_reg
         print(('init_reg params:' + '\t%.3f'*12)% tuple(Affine(self._anat_reg).param))
-        self.mask_data = self.mask.get_data()>0
 
         self._bias_correction = bias_correction
         self._bias_sigma = bias_sigma
@@ -836,10 +849,10 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
                 maxiter = 16, residual_tol = 2e-3, n_samples_min = 30):
         
         float_mask = nb.Nifti1Image(
-            self.mask.get_data().astype(np.float32),
-            self.mask.get_affine())
+            self.mask_data.astype(np.float32),
+            self.mask.affine)
 
-        ext_mask = self.mask.get_data()>0
+        ext_mask = self.mask_data
         ext_mask[pvmaps.get_data()[...,:2].sum(-1)>0.1] = True
 
         cdata = None
