@@ -86,6 +86,40 @@ class EPIOnlineResample(object):
         self._resample_fmap_values = None
         self.st_ratio = 1
 
+        self._ref_kdtree = None
+
+    def sample_ref(self, vol_data_masked, coords, data_out, mask, order=0, rbf_sigma=1, fill_value=0):
+        if self._ref_kdtree is None:
+            ref_coords = apply_affine(self.mask.affine, np.argwhere(self.mask_data))
+            self._ref_kdtree = KDTree(ref_coords)
+        if order==0: # NN
+            dists, idx = self._ref_kdtree.query(coords, k=1, distance_upper_bound=1)
+            mask[:] = np.isfinite(dists)
+            if not data_out is None:
+                data_out.fill(fill_value)
+                data_out[mask] = vol_data_masked[idx[mask]]
+        else: # RBF
+            data_out.fill(fill_value)
+            dists, idx = self._ref_kdtree.query(coords, k=int((rbf_sigma*2)**3), distance_upper_bound=rbf_sigma*2)
+            tmp_mask = np.isinf(dists)
+            idx[tmp_mask] = 0 # we keep them but their weights whould be zeros
+            weights = np.exp(-(dists/rbf_sigma)**2)
+            weights[weights<.05] = 0
+            data_out[:] = (weights*vol_data_masked[idx]).sum(-1)/weights.sum(-1)
+            data_out[np.isnan(data_out)] = fill_value
+            mask[:] = dists.min(-1)<1
+            data_out[~mask] = fill_value
+            
+            
+    def sample_shift(self, vox_in, aff):
+        vox = apply_affine(np.linalg.inv(self.fieldmap_reg.dot(self.fmap.affine)).dot(aff), vox_in)
+        shift = map_coordinates(
+            self.fmap.get_data(),
+            vox.reshape(-1,3).T,
+            mode='reflect',
+            order=1).reshape(vox_in.shape[:-1])
+        return shift
+
     def resample(self, data, out, voxcoords, order=1):
         out[:] = map_coordinates(data, np.rollaxis(voxcoords,-1,0),order=order).reshape(voxcoords.shape[:-1])
 #        out[:] = interpn(tuple([np.arange(d) for d in data.shape]),data,voxcoords,bounds_error=False,fill_value=0)
@@ -100,7 +134,13 @@ class EPIOnlineResample(object):
 
     def scatter_resample_rbf(self, data, out, slabs, transforms, coords,
                              pve_map = None,
-                             rbf_sigma=3, kneigh_dens=256, mask=True):
+                             rbf_sigma=1, 
+                             kneigh_dens=None,
+                             mask=True):
+        dist_ub = rbf_sigma*3 # 3 std in all directions
+        if kneigh_dens is None:
+            kneigh_dens = int((2*dist_ub)**3) # all points enclosed in a cube
+
         nslices = data[0].shape[2]*len(slabs)
         vol_shape = data[0].shape[:2]+(nslices,)
         if (not hasattr(self,'_scat_resam_rbf_coords') or
@@ -134,11 +174,13 @@ class EPIOnlineResample(object):
                     continue
             else:
                 d = d.ravel()
-            dists, idx = coords_kdtree.query(points.reshape(-1,3), k=kneigh_dens, distance_upper_bound=16)
-            not_inf = np.logical_not(np.isinf(dists))
+            dists, idx = coords_kdtree.query(points.reshape(-1,3), k=kneigh_dens, distance_upper_bound=dist_ub)
+            not_inf = np.isfinite(dists)
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
+            #dists_proj_norm = (coords[idx]-points[idx2]).dot(normals[idx])
+            # weights/= dists_proj_norm
             weights = np.exp(-(dists/rbf_sigma)**2)
             if not pve_map is None:
                 weights *= slab_pve[slab_mask][idx2]
@@ -455,39 +497,6 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.wm_weight_data = self.wm_weight.get_data()
             self.wm_weight_data_mask = self.wm_weight_data[self.mask_data]
 
-        self._ref_kdtree = None
-
-    def sample_ref(self, vol_data_masked, coords, data_out, mask, order=0, rbf_sigma=1, fill_value=0):
-        if self._ref_kdtree is None:
-            ref_coords = apply_affine(self.mask.affine, np.argwhere(self.mask_data))
-            self._ref_kdtree = KDTree(ref_coords)
-        if order==0: # NN
-            dists, idx = self._ref_kdtree.query(coords, k=1, distance_upper_bound=1)
-            mask[:] = np.isfinite(dists)
-            if not data_out is None:
-                data_out.fill(fill_value)
-                data_out[mask] = vol_data_masked[idx[mask]]
-        else: # RBF
-            data_out.fill(fill_value)
-            dists, idx = self._ref_kdtree.query(coords, k=int((rbf_sigma*2)**3), distance_upper_bound=rbf_sigma*2)
-            tmp_mask = np.isinf(dists)
-            idx[tmp_mask] = 0 # we keep them but their weights whould be zeros
-            weights = np.exp(-(dists/rbf_sigma)**2)
-            weights[weights<.05] = 0
-            data_out[:] = (weights*vol_data_masked[idx]).sum(-1)/weights.sum(-1)
-            data_out[np.isnan(data_out)] = fill_value
-            mask[:] = dists.min(-1)<1
-            data_out[~mask] = fill_value
-            
-            
-    def sample_shift(self, vox_in, aff):
-        vox = apply_affine(np.linalg.inv(self.fieldmap_reg.dot(self.fmap.affine)).dot(aff), vox_in)
-        shift = map_coordinates(
-            self.fmap.get_data(),
-            vox.reshape(-1,3).T,
-            mode='reflect',
-            order=1).reshape(vox_in.shape[:-1])
-        return shift
 
     def process(self, stack, ref_frame=None, yield_raw=False):
 
