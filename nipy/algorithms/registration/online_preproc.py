@@ -103,56 +103,48 @@ class EPIOnlineResample(object):
                              rbf_sigma=3, kneigh_dens=256, mask=True):
         nslices = data[0].shape[2]*len(slabs)
         vol_shape = data[0].shape[:2]+(nslices,)
-        phase_vec = np.zeros(3)
-        for sl, t in zip(slabs, transforms):
-            phase_vec+= t[:3,self.pe_dir]
-        phase_vec /= len(slabs)
         if (not hasattr(self,'_scat_resam_rbf_coords') or
-            not self._scat_resam_rbf_coords is coords
-            or not np.allclose(self._scat_resam_rbf_phase_vec, phase_vec, rtol=0, atol=1e-2)):
+            not self._scat_resam_rbf_coords is coords):
             self._scat_resam_rbf_coords = coords
-            self._scat_resam_rbf_phase_vec = phase_vec
-            ## TODO: if fieldmap recompute kdtree for each iteration, the fieldmap evolves!!
-            if not self.fmap is None:
-                self._precompute_sample_fmap(coords, vol_shape)
-                coords = coords + self._resample_fmap_values[:,np.newaxis].dot(phase_vec[np.newaxis])
             print('recompute KDTree')
             self._coords_kdtree = KDTree(coords)
         coords_kdtree = self._coords_kdtree 
         out.fill(0)
         out_weights = np.zeros(len(coords))
 
-        if mask:
-            epi_mask = self.inv_resample(self.mask, transforms[len(transforms)/2],
-                                         vol_shape, -1, self.mask_data)>0
-
-        if not pve_map is None:
-            epi_pvf = self.inv_resample(
-                pve_map, transforms[len(transforms)/2], vol_shape, -1, mask = self.mask_data)
-
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
         ## could/shoud we avoid loop here and do all slices in the meantime
         for sl, d, t in zip(slabs, data, transforms):
+            points = apply_affine(t, voxs[...,sl,:])
+            if not self.fmap is None:
+                slab_shift = self.sample_shift(voxs[...,sl,:], t)
+                phase_vec = t[:3,self.pe_dir] * self.fmap_scale * d.shape[self.pe_dir]
+                points -= slab_shift[...,np.newaxis] * phase_vec
+
             if mask:
-                slab_mask = epi_mask[...,sl]
+                slab_mask = np.zeros_like(d, dtype=np.bool)
+                if not pve_map is None:
+                    slab_pve = np.zeros_like(d)
+                    self.sample_ref(pve_map.get_data()[self.mask_data], points, slab_pve, slab_mask, order=1)
+                else:
+                    self.sample_ref(None, points, None, slab_mask, order=0)
+                points = points[slab_mask]
                 d = d[slab_mask]
-                points = apply_affine(t, voxs[...,sl,:][slab_mask,:])
-                if len(points) < 1:
+                if np.count_nonzero(slab_mask) < 1:
                     continue
             else:
-                points = apply_affine(t, voxs[...,sl,:]).reshape(-1,3)
                 d = d.ravel()
-            dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=16)
+            dists, idx = coords_kdtree.query(points.reshape(-1,3), k=kneigh_dens, distance_upper_bound=16)
             not_inf = np.logical_not(np.isinf(dists))
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
             weights = np.exp(-(dists/rbf_sigma)**2)
             if not pve_map is None:
-                weights *= epi_pvf[...,sl][slab_mask][idx2]
-            weights[weights<.05] = 0 # truncate
-            np.add.at(out, idx, d[idx2]*weights)
-            np.add.at(out_weights, idx, weights)
+                weights *= slab_pve[slab_mask][idx2]
+            non0 = weights > 1e-2 # truncate
+            np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
+            np.add.at(out_weights, idx[non0], weights[non0])
         out /= out_weights
         out[np.isinf(out)] = np.nan
 
@@ -694,7 +686,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         # compute coordinates in anat reference
         slab2anat = self._anat_reg.dot(self.affine).dot(new_reg.as_affine())
         self._anat_slab_coords[:] = apply_affine(slab2anat, self._slab_vox_idx)
-        self._slab_shift = self.sample_shift(self._slab_vox_idx, slab2anat)
+        self._slab_shift[:] = self.sample_shift(self._slab_vox_idx, slab2anat)
         phase_vec = slab2anat[:3,self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
         self._anat_slab_coords -= self._slab_shift[...,np.newaxis] * phase_vec
         # samplee epi pvf and mask
