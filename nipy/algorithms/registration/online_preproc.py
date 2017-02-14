@@ -153,7 +153,11 @@ class EPIOnlineResample(object):
         out_weights = np.zeros(len(coords))
 
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
-        ## could/shoud we avoid loop here and do all slices in the meantime
+        ## could/shoud we avoid loop here and do all slices in the meantime ?
+        slab_mask = np.zeros_like(data[0], dtype=np.bool)
+        if not pve_map is None:
+            pve_data = pve_map.get_data()
+            slab_pve = np.zeros_like(slab_mask, dtype=pve_data.dtype)
         for sl, d, t in zip(slabs, data, transforms):
             points = apply_affine(t, voxs[...,sl,:])
             if not self.fmap is None:
@@ -162,10 +166,8 @@ class EPIOnlineResample(object):
                 points -= slab_shift[...,np.newaxis] * phase_vec
 
             if mask:
-                slab_mask = np.zeros_like(d, dtype=np.bool)
                 if not pve_map is None:
-                    slab_pve = np.zeros_like(d)
-                    self.sample_ref(pve_map.get_data()[self.mask_data], points, slab_pve, slab_mask, order=1)
+                    self.sample_ref(pve_data[self.mask_data], points, slab_pve, slab_mask, order=1)
                 else:
                     self.sample_ref(None, points, None, slab_mask, order=0)
                 points = points[slab_mask]
