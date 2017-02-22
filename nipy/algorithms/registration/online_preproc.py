@@ -133,6 +133,7 @@ class EPIOnlineResample(object):
         del coords
 
     def scatter_resample_rbf(self, data, out, slabs, transforms, coords,
+                             normals=None,
                              pve_map = None,
                              rbf_sigma=1, 
                              kneigh_dens=None,
@@ -181,9 +182,14 @@ class EPIOnlineResample(object):
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
-            #dists_proj_norm = (coords[idx]-points[idx2]).dot(normals[idx])
-            # weights/= dists_proj_norm
             weights = np.exp(-(dists/rbf_sigma)**2)
+            if not normals is None:
+                # perform anisotropic kernel RBF
+                # the kernel is configure so that 2SD is reached at surface
+                normal_norm_sq = (normals[idx]**2).sum(-1)
+                constrained_mask = normal_norm_sq > 0
+                dists_proj_norm = (((coords[idx]-points[idx2])*(normals[idx])).sum(-1)/normal_norm_sq)[constrained_mask]
+                weights[constrained_mask] *= np.exp(-(dists_proj_norm/.5)**2)
             if not pve_map is None:
                 weights *= slab_pve[slab_mask][idx2]
             non0 = weights > 1e-2 # truncate
@@ -451,7 +457,6 @@ class EPIOnlineResample(object):
                     voxs.reshape(-1,3).T, order=order).reshape(shape)
         del grid, voxs
         return np.squeeze(rvol)
-
 
 class OnlineRealignBiasCorrection(EPIOnlineResample):
     
