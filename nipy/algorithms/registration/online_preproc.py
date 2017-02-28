@@ -225,37 +225,6 @@ class EPIOnlineResample(object):
         lndi = LinearNDInterpolator(points.reshape(-1,3), vol[epi_mask].ravel())
         print( 'interpolate', len(points), len(coords) )
         out[:] = lndi(coords.reshape(-1,3)).reshape(out.shape)
-
-    def ribbon_resample(self, data, out, slabs, transforms, inner_surf, outer_surf, mask=True):
-        nslices = data[0].shape[2]*len(slabs)
-        vol = np.empty(data[0].shape[:2]+(nslices,))
-        points = np.empty(vol.shape+(3,))
-        voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol.shape]],0,4)
-        phase_vec = np.zeros(3)
-        for sl, d in zip(slabs, data):
-            vol[...,sl] = d
-        for sl, t in zip(slabs, transforms):
-            points[:,:,sl] = apply_affine(t, voxs[:,:,sl])
-            phase_vec+= t[:3,self.pe_dir]
-        # get unit norm of mean phase orientation in world space
-        phase_vec /= np.linalg.norm(phase_vec)
-
-        #epi_vox_kdtree = scipy.spatial.KDTree(points.reshape(-1,3))        
-        
-        pass
-
-    def allpoints(self, stack_iter, out, gm_pve_idx=0, gm_thr=.1):
-        idx=0
-        for fr, sl, reg, tt, data, pve in stack_iter:
-            gm = pve[...,gm_pve_idx]
-            mask = gm > gm_thr
-            nsamp = np.count_nonzero(mask)
-            rng = slice(idx,idx+nsamp)
-            out[rng,:3] = apply_affine(reg, np.argwhere(mask))
-            out[rng,3] = tt
-            out[rng,4] = gm[mask]
-            out[rng,5] = data[mask]
-            idx += nsamp
     
     def _slice(self, pe_dir=slice(None), fe_dir=slice(None), slice_axis=slice(None)):
         slices = [None,]*3
@@ -263,8 +232,7 @@ class EPIOnlineResample(object):
         slices[self.fe_dir] = fe_dir
         slices[self.slice_axis] = slice_axis
         return tuple(slices)
-        
-
+    
     def _preproc_fmap(self):
         if self.fieldmap_reg is None:
             self.fieldmap_reg = np.eye(4)
@@ -458,6 +426,188 @@ class EPIOnlineResample(object):
         del grid, voxs
         return np.squeeze(rvol)
 
+
+
+
+class EPIOnlineRealignUndistort(EPIOnlineResample):
+    
+    def __init__(self
+                 ref,
+                 ref_reg,
+                 cc_radius = 2,
+                 orkf_transition_cov = 1e-2,
+                 orkf_convergence = 1e-2,
+                 **kwargs):
+        self._ref = ref
+        self._ref_data = self._ref.get_data().astype(DTYPE)
+        self._ref_reg = ref_reg
+        self._init_reg = Rigid(radius=RADIUS)
+        self._init_reg.from_matrix44(self._ref_reg)
+
+        self._cc_radius = cc_radius
+
+        self.orkf_convergence = orkf_convergence
+        self.orkf_transition_cov = orkf_transition_cov
+
+    def process(self, stack, yield_raw=False):
+
+        frame_iterator = stack.iter_frame(queue_dicoms=True)
+        self._voxel_size = stack._voxel_size
+        
+        nvol, self.affine, self._first_frame = frame_iterator.next()
+        self._epi2ref = np.linalg.inv(self._ref.affine).dot(self._ref_reg).dot(self.affine)
+        
+        new_reg = self._init_reg.copy()
+
+        self._slab_vox_idx = None
+        stack_it = stack.iter_slabs()
+        stack_has_data = True
+        fr,sl,aff,tt,sl_data = stack_it.next()
+        self.sl_data = sl_data = sl_data.astype(DTYPE)
+
+        ## init ROKF 
+        transition_covariance = np.eye(ndim_state, dtype=DTYPE) * self.orkf_transition_cov
+
+        self.filtered_state_means = [new_reg.param.copy()]
+        self.filtered_state_covariances = [initial_state_covariance]
+        self.niters = []
+        self.matrices = []
+        self.all_biases = []
+        
+        ## loop through slabs
+        while stack_has_data:
+            
+            ## register slab
+            params = self._register_slab(sl, sl_data, new_reg)
+            
+            ## ORKF
+            pred_params = self.filtered_state_means[-1]     
+            update_params = pred_params.copy()
+            last_update = update_params.copy()
+            pred_cov = self.filtered_state_covariances[-1]
+            update_cov = pred_cov.copy() + transition_covariance
+            
+            conv = np.inf
+            while conv < self.rokf_convergence:
+                
+                delta = np.matrix(params - pred_params)
+                obs_cov = (s*observation_covariance, + delta.dot(delta.T) + update_cov)/(s+1)
+                kalman_gain = np.linalg.inv(pred_cov + obs_cov).dot(pred_cov)
+                update_params[:] = pred_params + kalman_gain.dot(params - pred_params)
+                IK = np.eye(len(params)) - kalman_gain
+                update_cov[:] = kalman_gain.T.dot(obs_cov).dot(kalman_gain) + IK.T.dot(pred_cov).dot(IK)
+                
+                conv = np.max(np.abs(update_params-last_update))
+                last_update[:] = update_params
+                print update_params
+                
+            self.filtered_state_means.append(update_params)
+            self.filtered_state_covariances.append(update_cov)
+            new_reg.param = update_params
+
+            ## Bias field update
+            self._update_def_field(sl, sl_data, update_params)
+            
+            try:
+                fr,sl,aff,tt,sl_data[:] = stack_it.next()
+            except StopIteration:
+                stack_has_data = False
+
+    def _register_slab(self, sl, sl_data, new_reg):
+        # register the T1 to the slab
+        
+        if self._slab_vox_idx is None or sl_data.shape[self.slice_axis]!= self._slab_vox_idx.shape[-2]:
+            self._slab_vox_idx = np.empty(sl_data.shape+(sl_data.ndim,), dtype=np.int32)
+            ## set vox idx for in-plane, does not change with slab
+            for d in self.in_slice_axes:
+                self._slab_vox_idx[...,d] = np.arange(sl_data.shape[d])[[
+                    (slice(0,None) if d==d2 else None) for d2 in range(sl_data.ndim)]]
+            self._anat_slab_coords = np.zeros((7,)+self._slab_vox_idx.shape, dtype=DTYPE)
+            self._ref_interp = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
+            self._cc_factors = np.zeros(sl_data.shape+(5,), dtype=DTYPE)
+            self._slab_shift = np.zeros(sl_data.shape, dtype=DTYPE)
+        # set slice dimension vox idx (slice number)
+        self._slab_vox_idx[...,self.slice_axis] = np.asarray(sl)[[
+            (slice(0,None) if self.slice_axis==d2 else None) for d2 in range(sl_data.ndim)]]
+        # 
+        self._slab_shift[:] = self._diffeo_map[self._slice(slice_axis=sl)]
+
+        self._last_param = None
+        
+        def cost(param, sl_data):
+            self._compute_nrgy_gradient_rigid(param, sl_data)
+            return self._nrgy
+        def gradient(param, sl_data):
+            self._compute_nrgy_gradient_rigid(param, sl_data)
+            return self._rigid_gradient
+            
+        return scipy.optimize.fmin_cg(cost, new_reg.param, gradient, args=(sl_data))
+
+
+    def _compute_cc_factors(self, static, moving):
+        for si in range(len(static.shape[self.slice_axis])):
+            self._cc_factors[self._slice(slice_axis=si)] = dipy.align.crosscorr.precompute_cc_factors_2d(
+                static[self._slice(slice_axis=si))], 
+                moving[self._slice(slice_axis=si)],
+                self._cc_radius)
+        self._nrgy = -np.nanmean(np.square(self._cc_factors[...,2])/(self._cc_factors[...,3]*self._cc_factors[...,4]))
+
+
+    def _sample_ref(self, param, sl_data, rigid_gradient=False):
+        reg = Rigid(radius=RADIUS)
+        reg.param = param
+        slab2anat = reg.as_affine().dot(self.affine)
+        self._anat_slab_coords[0] = apply_affine(slab2anat, self._slab_vox_idx)
+        self._anat_slab_coords[0] += slab2anat[:3,self.pe_dir] * self._slab_shift
+        
+        if rigid_gradient:
+            for pi in range(6):
+                reg_delta = Rigid(radius=RADIUS)
+                param_delta = param.copy()
+                param_delta[pi] += self._gradient_delta
+                reg_delta.param = param_delta
+                slab2anat_delta = reg_delta.as_affine().dot(self.affine)
+                self._anat_slab_coords[pi+1] = apply_affine(slab2anat_delta, self._slab_vox_idx)
+                self._anat_slab_coords[pi+1] += slab2anat_delta[:3,self.pe_dir] * self._slab_shift
+
+            map_coordinates(self._ref_data, self._anat_slab_coords, self._ref_interp)
+            self._ref_interp[1:] -= self._ref_interp[0]
+        else:
+            self._anat_slab_coords[1] = self._anat_slab_coords[1] + slab2anat[:3,self.pe_dir] * subvox_delta??
+            map_coordinates(self._ref_data, self._anat_slab_coords[:2], self._ref_interp[:2])
+            self._ref_interp[1] -= self._ref_interp[0]
+
+    def _compute_nrgy_gradient_rigid(self, param, sl_data):
+        if self._last_param is param:
+            return
+        self._sample_ref(param, sl_data, rigid_gradient=True)
+
+        self._compute_cc_factors(self.sl_data, self._ref_interp[0])
+        Ii = self._cc_factors[..., 0]
+        Ji = self._cc_factors[..., 1]
+        sfm = self._cc_factors[..., 2]
+        sff = self._cc_factors[..., 3]
+        smm = self._cc_factors[..., 4]
+        temp = 2.0 * s / (sff * smm) * (Ji - sfm / sff * Ii)
+        
+        self._rigid_gradient = -np.nanmean((temp*self._ref_interp[1:]).reshape(6,-1),1)
+        
+    def _update_def_field(self, sl, sl_data, param):
+        while conv:
+            self._sample_ref(param, sl_data, rigid_gradient=False)
+            Ii = self._cc_factors[..., 0]
+            Ji = self._cc_factors[..., 1]
+            sfm = self._cc_factors[..., 2]
+            sff = self._cc_factors[..., 3]
+            smm = self._cc_factors[..., 4]
+            temp = 2.0 * s / (sff * smm) * (Ji - sfm / sff * Ii)
+            fw_step = temp * self._ref_interp[1]
+            for d in self.in_slice_axes:
+                fw_step[:] = gaussian_filter1d(fw_step, bias_sigma_vox, d, mode='constant')
+            nrm = np.sqrt(np.sum((fw_step)**2, -1)).max()
+            if nrm > 0:
+                fw_step /= nrm
+        
 class OnlineRealignBiasCorrection(EPIOnlineResample):
     
     def __init__(self,
