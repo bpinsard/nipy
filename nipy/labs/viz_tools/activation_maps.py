@@ -50,7 +50,7 @@ def plot_map(map, affine, cut_coords=None, anat=None, anat_affine=None,
              threshold=None, annotate=True, draw_cross=True,
              do3d=False, threshold_3d=None,
              view_3d=(38.5, 70.5, 300, (-2.7, -12, 9.1)),
-             black_bg=False, **kwargs):
+             black_bg=False, **imshow_kwargs):
     """ Plot three cuts of a given activation map (Frontal, Axial, and Lateral)
 
         Parameters
@@ -116,7 +116,7 @@ def plot_map(map, affine, cut_coords=None, anat=None, anat_affine=None,
             you whish to save figures with a black background, you
             will need to pass "facecolor='k', edgecolor='k'" to pylab's
             savefig.
-        kwargs: extra keyword arguments, optional
+        imshow_kwargs: extra keyword arguments, optional
             Extra keyword arguments passed to pylab.imshow
 
         Notes
@@ -230,12 +230,13 @@ def plot_map(map, affine, cut_coords=None, anat=None, anat_affine=None,
     _plot_anat(slicer, anat, anat_affine, title=title,
                annotate=annotate, draw_cross=draw_cross)
 
-    slicer.plot_map(map, affine, **kwargs)
+    slicer.plot_map(map, affine, **imshow_kwargs)
     return slicer
 
 
 def _plot_anat(slicer, anat, anat_affine, title=None,
-               annotate=True, draw_cross=True, dim=False, cmap=pl.cm.gray):
+               annotate=True, draw_cross=True, dim=False, cmap=pl.cm.gray,
+               **imshow_kwargs):
     """ Internal function used to plot anatomy
     """
     canonical_anat = False
@@ -274,7 +275,8 @@ def _plot_anat(slicer, anat, anat_affine, title=None,
             else:
                 vmin = vmean - (1+dim)*ptp
         slicer.plot_map(anat, anat_affine, cmap=cmap,
-                              vmin=vmin, vmax=vmax)
+                              vmin=vmin, vmax=vmax,
+                              **imshow_kwargs)
 
         if annotate:
             slicer.annotate()
@@ -296,7 +298,8 @@ def _plot_anat(slicer, anat, anat_affine, title=None,
 
 def plot_anat(anat=None, anat_affine=None, cut_coords=None, slicer='ortho',
               figure=None, axes=None, title=None, annotate=True,
-              draw_cross=True, black_bg=False, dim=False, cmap=pl.cm.gray):
+              draw_cross=True, black_bg=False, dim=False, cmap=pl.cm.gray,
+              **imshow_kwargs):
     """ Plot three cuts of an anatomical image (Frontal, Axial, and Lateral)
 
         Parameters
@@ -349,6 +352,8 @@ def plot_anat(anat=None, anat_affine=None, cut_coords=None, slicer='ortho',
             ptp = .5*(vmax - vmin)
         cmap: matplotlib colormap, optional
             The colormap for the anat
+        imshow_kwargs: extra keyword arguments, optional
+            Extra keyword arguments passed to pylab.imshow
 
         Notes
         -----
@@ -361,7 +366,8 @@ def plot_anat(anat=None, anat_affine=None, cut_coords=None, slicer='ortho',
                                           black_bg=black_bg)
 
     _plot_anat(slicer, anat, anat_affine, title=title,
-               annotate=annotate, draw_cross=draw_cross, dim=dim, cmap=cmap)
+               annotate=annotate, draw_cross=draw_cross, dim=dim, cmap=cmap,
+               **imshow_kwargs)
     return slicer
 
 
@@ -371,12 +377,13 @@ def demo_plot_map(do3d=False, **kwargs):
     map = np.zeros((182, 218, 182))
     # Color a asymetric rectangle around Broca area:
     x, y, z = -52, 10, 22
-    x_map, y_map, z_map = coord_transform(x, y, z, mni_sform_inv)
+    mapped = coord_transform(x, y, z, mni_sform_inv)
+    x_map, y_map, z_map = [int(v) for v in mapped]
     # Compare to values obtained using fslview. We need to add one as
     # voxels do not start at 0 in fslview.
     assert x_map == 142
-    assert y_map +1 == 137
-    assert z_map +1 == 95
+    assert y_map + 1 == 137
+    assert z_map + 1 == 95
     map[x_map-5:x_map+5, y_map-3:y_map+3, z_map-10:z_map+10] = 1
     return plot_map(map, mni_sform, threshold='auto',
                         title="Broca's area", do3d=do3d,

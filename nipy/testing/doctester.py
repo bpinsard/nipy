@@ -4,16 +4,23 @@ To run doctests via nose, you'll need ``nosetests nipy/testing/doctester.py
 --doctest-test``, because this file will be identified as containing tests.
 """
 from __future__ import absolute_import
+
 import re
+import os
+
 from doctest import register_optionflag
 
 import numpy as np
+# Import for testing structured array reprs
+from numpy import array  # noqa
 
+from nipy.utils import _NoValue
 from ..fixes.numpy.testing.noseclasses import (NumpyDoctest,
                                                NumpyOutputChecker)
 
 IGNORE_OUTPUT = register_optionflag('IGNORE_OUTPUT')
 SYMPY_EQUAL = register_optionflag('SYMPY_EQUAL')
+STRUCTARR_EQUAL = register_optionflag('STRUCTARR_EQUAL')
 STRIP_ARRAY_REPR = register_optionflag('STRIP_ARRAY_REPR')
 IGNORE_DTYPE = register_optionflag('IGNORE_DTYPE')
 NOT_EQUAL = register_optionflag('NOT_EQUAL')
@@ -184,6 +191,13 @@ class NipyOutputChecker(NumpyOutputChecker):
             from sympy import sympify
             res = sympify(want) == sympify(got)
             return res == wanted_tf
+        # Do the strings represent the same structured array
+        if STRUCTARR_EQUAL & optionflags:
+            first = eval(want)
+            second = eval(got)
+            if not first.tolist() == second.tolist():
+                return False
+            return first.dtype.names == second.dtype.names
         # Pass tests through two-pass numpy checker
         res = NumpyOutputChecker.check_output(self, want, got, optionflags)
         # Return True if we wanted True and got True, or if we wanted False and
@@ -198,3 +212,12 @@ class NipyDoctest(NumpyDoctest):
     def set_test_context(self, test):
         # set namespace for tests
         test.globs['np'] = np
+
+    def options(self, parser, env=_NoValue):
+        # Override option handling to take environment out of default values.
+        # Parent class has os.environ as default value for env.  This results
+        # in the environment being picked up and printed out in the built API
+        # documentation.  Remove this default, reset it inside the function.
+        if env is _NoValue:
+            env = os.environ
+        super(NipyDoctest, self).options(parser, env)
