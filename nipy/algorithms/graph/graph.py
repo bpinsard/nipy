@@ -114,10 +114,10 @@ class Graph(object):
     def set_edges(self, edges):
         """Sets the graph's edges
 
-        Preconditions
-        -------------
-        - edges has a correct size
-        - edges take values in [1..V]
+        Preconditions:
+
+        * edges has a correct size
+        * edges take values in [1..V]
         """
         if (not isinstance(edges, None.__class__) and (edges.size != 0)):
             if ((np.shape(edges)[0] != self.E) or (np.shape(edges)[1] != 2)):
@@ -373,7 +373,8 @@ def knn(X, k=1):
     # neighbour system
     bool_knn = dist < sorted_dist[k + 1]
     bool_knn += bool_knn.T
-    bool_knn -= np.diag(np.diag(bool_knn))
+    # xor diagonal
+    bool_knn ^= np.diag(np.diag(bool_knn))
     dist *= (bool_knn > 0)
     return wgraph_from_adjacency(dist)
 

@@ -312,7 +312,8 @@ def grid_domain_from_shape(shape, affine=None):
 
     rect = np.ones(shape)
     ijk = np.array(np.where(rect)).T
-    vol = np.absolute(np.linalg.det(affine[:3, 0:3])) * np.ones(np.sum(rect))
+    vol = (np.absolute(np.linalg.det(affine[:3, 0:3])) *
+           np.ones(int(np.sum(rect))))
     topology = smatrix_from_nd_idx(ijk, 0)
     return NDGridDomain(dim, ijk, shape, affine, vol, topology)
 
@@ -451,21 +452,20 @@ class DiscreteDomain(object):
 
         Parameters
         ----------
-        dim: int,
-             the (physical) dimension of the domain
-        coord: array of shape(size, em_dim),
-               explicit coordinates of the domain sites
-        local_volume: array of shape(size),
-                      yields the volume associated with each site
-        id: string, optional,
-             domain identifier
-        referential: string, optional,
-                     identifier of the referential of the coordinates system
+        dim: int
+            the (physical) dimension of the domain.
+        coord: array of shape(size, em_dim)
+            explicit coordinates of the domain sites.
+        local_volume: array of shape(size)
+            yields the volume associated with each site.
+        id: string, optional
+            domain identifier.
+        referential: string, optional
+            identifier of the referential of the coordinates system.
 
-        Caveat
-        ------
-        em_dim may be greater than dim e.g. (meshes coordinate in 3D)
-
+        Notes
+        -----
+        Caveat: em_dim may be greater than dim e.g. (meshes coordinate in 3D)
         """
         # dimension
         self.dim = dim
@@ -692,10 +692,9 @@ class NDGridDomain(StructuredDomain):
         referential: string, optional,
                      identifier of the referential of the coordinates system
 
-        Fixme
+        Notes
         -----
-        local_volume might be computed on-the-fly as |det(affine)|
-
+        FIXME: local_volume might be computed on-the-fly as |det(affine)|
         """
         # shape
         if len(shape) != dim:
