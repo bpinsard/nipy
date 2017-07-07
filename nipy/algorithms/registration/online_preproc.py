@@ -166,11 +166,11 @@ class EPIOnlineResample(object):
         out_weights = np.zeros(len(coords))
 
         voxs = np.rollaxis(np.mgrid[[slice(0,d) for d in vol_shape]],0,4)
-        ## could/shoud we avoid loop here and do all slices in the meantime ?
         slab_mask = np.zeros_like(data[0], dtype=np.bool)
         if not pve_map is None:
             pve_data = pve_map.get_data()
             slab_pve = np.zeros_like(slab_mask, dtype=pve_data.dtype)
+        ## could/should we avoid loop here and do all slices in the meantime ?
         for sl, d, t in zip(slabs, data, transforms):
             points = apply_affine(t, voxs[...,sl,:])
             if not self.fmap is None:
@@ -207,6 +207,7 @@ class EPIOnlineResample(object):
             non0 = weights > 1e-5 # truncate
             np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
             np.add.at(out_weights, idx[non0], weights[non0])
+
         out /= out_weights
         out[np.isinf(out)] = np.nan
 
@@ -826,7 +827,6 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         #if warnflags:
         #    raise RuntimeError
         #return reg_params
-
 
 
     def _sample_ref_gradient(param):
