@@ -91,7 +91,7 @@ You can find our sources and single-click downloads:
 * Download the `current development version`_ as a tar/zip file;
 * Downloads of all `available releases`_.
 
-.. _main repository: http://github.com/nipy/nipy
+.. _main repository: https://github.com/nipy/nipy
 .. _Documentation: http://nipy.org/nipy
 .. _current development version: https://github.com/nipy/nipy/archive/master.zip
 .. _available releases: http://pypi.python.org/pypi/nipy
@@ -100,7 +100,12 @@ Tests
 =====
 
 To run nipy's tests, you will need to install the nose_ Python testing
-package.  Then::
+package.  If you are using Python 2.7, you will also need to install the mock_
+testing package - e.g.::
+
+    pip install nose mock
+
+Then::
 
     python -c "import nipy; nipy.test()"
 
@@ -113,23 +118,18 @@ directory of the nipy distribution::
 is part of the nose package.  Try ``nipnost --help`` to see a large number of
 command-line options.
 
-Dependencies
+Installation
 ============
 
-To run NIPY, you will need:
+See the latest `installation instructions`_.
 
-* python_ >= 2.6 (tested with 2.6, 2.7, 3.2 through 3.5)
-* numpy_ >= 1.6.0
-* scipy_ >= 0.9.0
-* sympy_ >= 0.7.0
-* nibabel_ >= 1.2
+License
+=======
 
-You will probably also like to have:
+We use the 3-clause BSD license; the full license is in the file ``LICENSE`` in
+the nipy distribution.
 
-* ipython_ for interactive work
-* matplotlib_ for 2D plotting
-* mayavi_ for 3D plotting
-
+.. links:
 .. _python: http://python.org
 .. _numpy: http://numpy.scipy.org
 .. _scipy: http://www.scipy.org
@@ -137,14 +137,9 @@ You will probably also like to have:
 .. _nibabel: http://nipy.org/nibabel
 .. _ipython: http://ipython.org
 .. _matplotlib: http://matplotlib.org
-.. _mayavi: http://code.enthought.com/projects/mayavi/
 .. _nose: http://nose.readthedocs.org/en/latest
-
-License
-=======
-
-We use the 3-clause BSD license; the full license is in the file ``LICENSE``
-in the nipy distribution.
+.. _mock: https://pypi.python.org/pypi/mock
+.. _installation instructions: http://nipy.org/nipy/users/installation.html
 """
 
 # minimum versions
@@ -191,7 +186,7 @@ NIPY_INSTALL_HINT = \
 %s
 
 Check the instructions in the ``doc/users/install_data.rst`` file in the nipy
-source tree, or online at http://nipy.org/nipy/stable/users/install_data.html
+source tree, or online at http://nipy.org/nipy/users/install_data.html
 
 If you have the package, have you set the path to the package correctly?"""
 
