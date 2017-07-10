@@ -176,8 +176,9 @@ class EPIOnlineResample(object):
                 if np.count_nonzero(slab_mask) < 1:
                     continue
             else:
+                points = points.reshape(-1,3)
                 d = d.ravel()
-            dists, idx = coords_kdtree.query(points.reshape(-1,3), k=kneigh_dens, distance_upper_bound=dist_ub)
+            dists, idx = coords_kdtree.query(points, k=kneigh_dens, distance_upper_bound=dist_ub)
             not_inf = np.isfinite(dists)
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
@@ -191,7 +192,10 @@ class EPIOnlineResample(object):
                 dists_proj_norm = (((coords[idx]-points[idx2])*(normals[idx])).sum(-1)/normal_norm_sq)[constrained_mask]
                 weights[constrained_mask] *= np.exp(-(dists_proj_norm/.5)**2)
             if not pve_map is None:
-                weights *= slab_pve[slab_mask][idx2]
+                if mask:
+                    weights *= slab_pve[slab_mask][idx2]
+                else:
+                    weights *= slab_pve.ravel()[idx2]
             non0 = weights > 1e-2 # truncate
             np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
             np.add.at(out_weights, idx[non0], weights[non0])
