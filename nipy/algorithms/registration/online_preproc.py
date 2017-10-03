@@ -537,7 +537,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         
         # reference scale space setting
         ref_ss = dipy.align.scalespace.ScaleSpace(
-            self._ref_data*self.mask_data_dil, self._levels, self._ref.affine,
+            self._ref_data*self.mask_data, self._levels, self._ref.affine,
             self._ref.header.get_zooms(), self._ss_sigma_factor,
             False)
         
@@ -575,8 +575,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             grid = np.mgrid[[slice(0,d) for d in current_disp_shape]]
             
             #compute coords in blips data
-            coords_blip_up = apply_affine2(ref2blip_up, grid)
-            coords_blip_down = apply_affine2(ref2blip_down, grid)
+            coords_blip_up = np.empty(grid.shape, dtype=DTYPE) 
+            coords_blip_down = np.empty(grid.shape, dtype=DTYPE)
 
             new_shift_up = np.zeros(current_disp_shape+(3,), dtype=DTYPE)
             new_shift_down = np.zeros_like(new_shift_up)
@@ -593,24 +593,30 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             shift_up = new_shift_up
             shift_down = new_shift_down
             
-            step_up = np.empty(current_disp_shape, dtype=DTYPE)
+            step_up = np.empty(current_disp_shape+(3,), dtype=DTYPE)
             step_down = np.empty_like(step_up)
             step_up_eqcon = np.empty_like(step_up)
             step_down_eqcon = np.empty_like(step_up)
         
-            dxi4_dk = np.empty_like(step_up)
+            dxi4_dk = np.empty(current_disp_shape, dtype=DTYPE)
 
-            jac_blip_up = np.empty_like(step_up)
-            jac_blip_down = np.empty_like(step_up)
-            blip_up_down_sum = np.empty_like(step_up)
-            blip_up_down_geomean = np.empty_like(step_up)
+            jac_blip_up = np.empty((3,3,)+current_disp_shape, dtype=DTYPE)
+            jac_blip_down = np.empty((3,3,)+current_disp_shape, dtype=DTYPE)
+            jac_det_blip_up = np.empty_like(dxi4_dk)
+            jac_det_blip_down = np.empty_like(dxi4_dk)
+            blip_up_down_sum = np.empty_like(dxi4_dk)
+            blip_up_down_geomean = np.empty_like(dxi4_dk)
 
-            corr = np.empty_like(step_up)
+            corr = np.empty_like(dxi4_dk)
 
-            blip_up_interp = np.empty_like(step_up)
-            blip_down_interp = np.empty_like(step_up)
-            blip_up_pe_grad = np.empty((2,)+tuple(current_disp_shape), dtype=DTYPE)
-            blip_down_pe_grad = np.empty((2,)+current_disp_shape, dtype=DTYPE)
+            blip_up_interp = np.empty_like(dxi4_dk)
+            blip_down_interp = np.empty_like(dxi4_dk)
+            #blip_up_pe_grad = np.empty((2,)+current_disp_shape, dtype=DTYPE)
+            #blip_down_pe_grad = np.empty((2,)+current_disp_shape, dtype=DTYPE)
+            
+            # useless merged with step_up/_down
+            #blip_up_grad = np.empty(current_disp_shape+(3,), dtype=DTYPE)
+            #blip_down_grad = np.empty(current_disp_shape+(3,), dtype=DTYPE)
 
             ref2subsamp = np.linalg.inv(self._ref.affine).dot(current_disp_grid2world)
             ref_subsamp_coords = apply_affine2(ref2subsamp, grid)
@@ -631,19 +637,42 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 niter += 1
 
                 #project gradient of shift on pedir unit vector
-                jac_blip_up[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
+                
+                for di in range(3):
+                    for gi,ggu,ggd in zip(range(3),
+                                          np.gradient(shift_up[...,di], *current_disp_spacing),
+                                          np.gradient(shift_down[...,di], *current_disp_spacing)):
+                        jac_blip_up[di,gi] = ggu
+                        jac_blip_down[di,gi] = ggd
+                    jac_blip_up[di,di] += 1
+                    jac_blip_down[di,di] += 1
+                jac_det_blip_up[:] = jac_det(jac_blip_up)
+                #print(jac_det_blip_up.min(),jac_det_blip_up.max())
+                jac_det_blip_down[:] = jac_det(jac_blip_down)
+                #print(jac_det_blip_down.min(),jac_det_blip_down.max())
+                    
+                """
+                jac_det_blip_up[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
                                             zip(np.gradient(shift_up[...,0], *current_disp_spacing), blip_up_pedir_ref), 0)
-                jac_blip_down[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
+                jac_det_blipdown[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
                                               zip(np.gradient(shift_down[...,0], *current_disp_spacing), blip_down_pedir_ref), 0)
+                """
+                #jac_det_blip_up[:] = 1
+                #jac_det_blip_down[:] = 1
 
+
+                coords_blip_up[:] = apply_affine2(ref2blip_up, grid+np.rollaxis(shift_up/current_disp_spacing,-1,0))
+                coords_blip_down[:] = apply_affine2(ref2blip_down, grid+np.rollaxis(shift_down/current_disp_spacing,-1,0))
                 # apply shift
-                coords_blip_up[self.pe_dir] += shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
-                coords_blip_down[self.pe_dir] += shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
+                #coords_blip_up[self.pe_dir] += shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
+                #coords_blip_down[self.pe_dir] += shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
 
                 # interpolate data and gradient
                 map_coordinates(blip_up_ss.get_image(level), coords_blip_up, blip_up_interp, order=1)
                 map_coordinates(blip_down_ss.get_image(level), coords_blip_down, blip_down_interp, order=1)
 
+
+                """
                 coords_blip_up[self.pe_dir] += .5
                 coords_blip_down[self.pe_dir] += .5
                 map_coordinates(blip_up_ss.get_image(level), coords_blip_up, blip_up_pe_grad[0], order=1)
@@ -655,18 +684,23 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 map_coordinates(blip_down_ss.get_image(level), coords_blip_down, blip_down_pe_grad[1], order=1)
                 blip_up_pe_grad[0] -= blip_up_pe_grad[1] 
                 blip_down_pe_grad[0] -= blip_down_pe_grad[1]
-
+                """
                 # unshift remove for next iterations
-                coords_blip_up[self.pe_dir] -= shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
-                coords_blip_down[self.pe_dir] -= shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
-                coords_blip_up[self.pe_dir] += .5
-                coords_blip_down[self.pe_dir] += .5
+                #coords_blip_up[self.pe_dir] -= shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
+                #coords_blip_down[self.pe_dir] -= shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
+                #coords_blip_up[self.pe_dir] += .5
+                #coords_blip_down[self.pe_dir] += .5
+                
+                for gi,gg in enumerate(np.gradient(blip_up_interp)):
+                    step_up[...,gi] = gg
+                for gi,gg in enumerate(np.gradient(blip_down_interp)):
+                    step_down[...,gi] = gg
 
                 blip_up_down_sum[:] = blip_up_interp + blip_down_interp
 
-                blip_up_down_geomean[:] = blip_up_down_sum/2
-                #blip_up_down_geomean[:] = 2*(blip_up_interp*blip_down_interp)/blip_up_down_sum
-                #blip_up_down_geomean[blip_up_interp * blip_down_interp < 1e-5] = 0
+                #blip_up_down_geomean[:] = blip_up_down_sum/2
+                blip_up_down_geomean[:] = 2*(blip_up_interp*blip_down_interp)/blip_up_down_sum
+                blip_up_down_geomean[blip_up_down_sum < 1e-5] = 0
 
                 ks_fact[:] = dipy.align.crosscorr.precompute_cc_factors_3d(
                     ref_data,
@@ -674,22 +708,28 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                     self._cc_radius)
 
                 msk2 = np.logical_and(msk, np.prod(ks_fact[...,3:],-1) > 1e-5)
+                #msk2 = np.prod(ks_fact[...,3:],-1) > 1e-5
 
                 dxi4_dk[:] = 2.0 * ks_fact[...,2] / (ks_fact[...,3] * ks_fact[...,4]) * \
                              (ks_fact[...,0] - ks_fact[...,2]/ ks_fact[...,4] * ks_fact[...,1])
+                dxi4_dk *= msk2
                 #dxi4_dk[~msk2] = 0
 
-                step_up[:] = np.square(blip_down_interp/blip_up_down_sum) * jac_blip_up * blip_up_pe_grad[0] * dxi4_dk
-                step_down[:] = np.square(blip_up_interp/blip_up_down_sum) * jac_blip_down * blip_down_pe_grad[0] * dxi4_dk
+#                step_up[:] = np.square(blip_down_interp/blip_up_down_sum) * jac_det_blip_up * blip_up_pe_grad[0] * dxi4_dk
+#                step_down[:] = np.square(blip_up_interp/blip_up_down_sum) * jac_det_blip_down * blip_down_pe_grad[0] * dxi4_dk
+                step_up *= (np.square(blip_down_interp/blip_up_down_sum) * jac_det_blip_up * dxi4_dk)[...,np.newaxis]
+                step_down *= (np.square(blip_up_interp/blip_up_down_sum) * jac_det_blip_down * dxi4_dk)[...,np.newaxis]
+
                 step_up[~np.isfinite(step_up)] = 0
                 step_down[~np.isfinite(step_down)] = 0
 
-                #step_up *= msk2
-                #step_down *= msk2
+                #step_up *= msk2[...,np.newaxis]
+                #step_down *= msk2[...,np.newaxis]
 
                 def_field_sigma_vox = 2.
-                gaussian_filter(step_up, def_field_sigma_vox, output=step_up)
-                gaussian_filter(step_down, def_field_sigma_vox, output=step_down)
+                for di in range(3):
+                    gaussian_filter1d(step_up, def_field_sigma_vox, axis=di, output=step_up)
+                    gaussian_filter1d(step_down, def_field_sigma_vox, axis=di, output=step_down)
 
                 for a in [step_up, step_down]:
                     for b in [0,-1]:
@@ -704,16 +744,23 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                     step_up_eqcon -= reg/2. * (step_down+step_up)
                     step_down_eqcon -= reg/2. * (step_up+step_down)
 
-                norm_step_up = np.abs(step_up_eqcon).max()# / current_disp_spacing[0]
-                norm_step_down = np.abs(step_down_eqcon).max()# / current_disp_spacing[0]
+                # project on pedir
+                step_up_eqcon[:] = (step_up_eqcon*blip_up_pedir_ref).sum(-1)[...,np.newaxis]*blip_up_pedir_ref
+                step_down_eqcon[:] = (step_down_eqcon*blip_down_pedir_ref).sum(-1)[...,np.newaxis]*blip_down_pedir_ref
+
+                #norm_step_up = np.abs(step_up_eqcon).max()# / current_disp_spacing[0]
+                #norm_step_down = np.abs(step_down_eqcon).max()# / current_disp_spacing[0]
+
+                norm_step_up = np.sqrt(np.sum((step_up_eqcon/current_disp_spacing) ** 2, -1)).max()
+                norm_step_down = np.sqrt(np.sum((step_down_eqcon/current_disp_spacing) ** 2, -1)).max()
 
                 if norm_step_up > 0:
                     step_up_eqcon /= norm_step_up
                 if norm_step_down > 0:
                     step_down_eqcon /= norm_step_down
 
-                shift_up[...,0] += step_up_eqcon * self.step_length
-                shift_down[...,0] += step_down_eqcon * self.step_length
+                shift_up[:] += step_up_eqcon * self.step_length
+                shift_down[:] += step_down_eqcon * self.step_length
 
                 inv_shift_up[:] = dipy.align.vector_fields.invert_vector_field_fixed_point_3d(
                     shift_up,
@@ -755,23 +802,21 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 self.energy_list.append(energy)
                 print(energy, derivative,
                       np.abs(shift_up).max(), np.abs(shift_down).max(),
-                      jac_blip_up.max(), jac_blip_up.min())
+                      jac_det_blip_up.max(), jac_det_blip_up.min())
+                
+            #del ks_fact, step_up, step_down, step_up_eqcon, step_down_eqcon, blip_up_down_sum, grid, dxi4_dk,\
+            #    blip_up_pe_grad, blip_down_pe_grad
+            del ks_fact, step_up, step_down, step_up_eqcon, step_down_eqcon, blip_up_down_sum, grid, dxi4_dk
 
-            del ks_fact, step_up, step_down, step_up_eqcon, step_down_eqcon, blip_up_down_sum, grid, dxi4_dk,\
-                blip_up_pe_grad, blip_down_pe_grad
             if level > 0:
                 del blip_up_down_geomean, corr, blip_up_interp, blip_down_interp
             self.full_energy_profile.extend(self.energy_list)
         
-        # last jacobian update
-        jac_blip_up[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
-                                    zip(np.gradient(shift_up[...,0], *current_disp_spacing), blip_up_pedir_ref), 0)
-        jac_blip_down[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
-                                      zip(np.gradient(shift_down[...,0], *current_disp_spacing), blip_down_pedir_ref), 0)
-
+        # todo: last jacobian update
+        
         return shift_up[...,0], shift_down[...,0], blip_up_down_geomean,\
             blip_up_interp, blip_down_interp,\
-            corr, jac_blip_up, jac_blip_down
+            corr, jac_det_blip_up, jac_det_blip_down
 
     # from dipy imwarp
     def _approximate_derivative_direct(self, x, y):
@@ -1725,3 +1770,9 @@ def resample_mat_shape(mat,shape,voxsize):
     newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
     newmat[:3,3] = mat[:3,3]+newmat[:3,:3].dot(res/voxsize/2)
     return newmat,tuple(newshape.astype(np.int32).tolist())
+
+
+def jac_det(jac):
+    return (jac[0,0])*((jac[1,1])*(jac[2,2])-(jac[1,2]*jac[2,1])) -\
+        jac[0,1]*((jac[1,0]*jac[2,2])-(jac[1,2]*jac[2,0])) +\
+        jac[0,2]*((jac[1,0]*jac[2,1])-(jac[1,1]*jac[2,1]))
