@@ -468,6 +468,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                  **kwargs):
         super(EPIOnlineRealignUndistort, self).__init__(**kwargs)
 
+        self.dim = 3
         self._ref = ref
         self._ref_data = self._ref.get_data().astype(DTYPE)
         #self._ref_data_smooth = gaussian_filter(self._ref_data, 1)
@@ -511,7 +512,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         del fmap_voxs, grid
  
     def _diffeo_blip_map(self, blip_up_stack, blip_down_stack, bup_reg, bdown_reg, reg=.8):
-        
+
+        import dipy.align.vector_fields as vfu
+        from dipy.align.imwarp import get_direction_and_spacings
         _, blip_up_affine, blip_up_data = blip_up_stack.iter_frame(queue_dicoms=True).next()
         _, blip_down_affine, blip_down_data = blip_down_stack.iter_frame(queue_dicoms=True).next()
         blip_up_data = blip_up_data.astype(DTYPE)
@@ -529,16 +532,11 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                                      moving_grid2world = blip_down_affine,
                                      starting_affine = 'mass')
         """
-
-        # maybe compute gradient from interpolated data, in higher resolution?
-        blip_up_grad = np.gradient(blip_up_data, axis=self.pe_dir)
-        blip_down_grad = np.gradient(blip_down_data, axis=self.pe_dir)
-
         
         # reference scale space setting
         ref_ss = dipy.align.scalespace.ScaleSpace(
-            self._ref_data*self.mask_data, self._levels, self._ref.affine,
-            self._ref.header.get_zooms(), self._ss_sigma_factor,
+            self._ref_data, self._levels, self._ref.affine,
+            self._ref.header.get_zooms(), self._ss_sigma_factor/self._ref.header.get_zooms()[0],
             False)
         
         blip_up_ss = dipy.align.scalespace.ScaleSpace(
@@ -565,33 +563,46 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             ref2blip_down = np.linalg.inv(blip_down_affine).dot(bdown_reg).dot(current_disp_grid2world)
             blip_up2ref = np.linalg.inv(ref2blip_up)
             blip_down2ref = np.linalg.inv(ref2blip_down)
+
+            blip_up2world = np.linalg.inv(bup_reg).dot(blip_up_affine)
+            blip_down2world = np.linalg.inv(bdown_reg).dot(blip_down_affine)
             
             # get pe_dir unit vector in ref space
-            blip_up_pedir_ref = blip_up2ref[:3,self.pe_dir].copy()
+            blip_up_pedir_ref = blip_up2world[:3,self.pe_dir].copy()
             blip_up_pedir_ref /= np.sqrt(np.square(blip_up_pedir_ref).sum())
-            blip_down_pedir_ref = blip_down2ref[:3,self.pe_dir].copy()
+            blip_down_pedir_ref = blip_down2world[:3,self.pe_dir].copy()
             blip_down_pedir_ref /= np.sqrt(np.square(blip_down_pedir_ref).sum())
+        
+            ref_direction, ref_spacing = get_direction_and_spacings(self._ref.affine, self.dim)
+            blip_up_direction, blip_up_spacing = get_direction_and_spacings(blip_up2world, self.dim)
+            blip_down_direction, blip_down_spacing = get_direction_and_spacings(blip_down2world, self.dim)
+            #ref_direction_mtx = np.eye(self.dim + 1)
+            blip_up_direction_mtx = np.eye(self.dim + 1)
+            blip_down_direction_mtx = np.eye(self.dim + 1)
+            #ref_direction_mtx[:self.dim, :self.dim] = ref_direction
+            blip_up_direction_mtx[:self.dim, :self.dim] = blip_up_direction
+            blip_down_direction_mtx[:self.dim, :self.dim] = blip_down_direction
             
             grid = np.mgrid[[slice(0,d) for d in current_disp_shape]]
-            
-            #compute coords in blips data
-            coords_blip_up = np.empty(grid.shape, dtype=DTYPE) 
-            coords_blip_down = np.empty(grid.shape, dtype=DTYPE)
 
             new_shift_up = np.zeros(current_disp_shape+(3,), dtype=DTYPE)
             new_shift_down = np.zeros_like(new_shift_up)
-            inv_shift_up = np.zeros_like(new_shift_up)
-            inv_shift_down = np.zeros_like(new_shift_up)
+            new_inv_shift_up = np.zeros_like(new_shift_up)
+            new_inv_shift_down = np.zeros_like(new_shift_up)
 
             if level < self._levels-1:
                 to_level_down_aff = ref_ss.get_affine_inv(level+1).dot(ref_ss.get_affine(level))
                 to_level_down_coords = apply_affine2(to_level_down_aff, grid)
-                
-                new_shift_up[...,0] = map_coordinates(shift_up[...,0], to_level_down_coords, order=1)
-                new_shift_down[...,0] = map_coordinates(shift_down[...,0], to_level_down_coords, order=1)
-                del to_level_down_coords, shift_up, shift_down
+
+                for d in range(3):
+                    new_shift_up[...,d] = map_coordinates(shift_up[...,d], to_level_down_coords, order=1)
+                    new_shift_down[...,d] = map_coordinates(shift_down[...,d], to_level_down_coords, order=1)
+                del to_level_down_coords, shift_up, shift_down, inv_shift_up, inv_shift_down
             shift_up = new_shift_up
             shift_down = new_shift_down
+            inv_shift_up = new_inv_shift_up
+            inv_shift_down = new_inv_shift_down
+            del new_shift_up, new_shift_down, new_inv_shift_up, new_inv_shift_down
             
             step_up = np.empty(current_disp_shape+(3,), dtype=DTYPE)
             step_down = np.empty_like(step_up)
@@ -611,12 +622,6 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
 
             blip_up_interp = np.empty_like(dxi4_dk)
             blip_down_interp = np.empty_like(dxi4_dk)
-            #blip_up_pe_grad = np.empty((2,)+current_disp_shape, dtype=DTYPE)
-            #blip_down_pe_grad = np.empty((2,)+current_disp_shape, dtype=DTYPE)
-            
-            # useless merged with step_up/_down
-            #blip_up_grad = np.empty(current_disp_shape+(3,), dtype=DTYPE)
-            #blip_down_grad = np.empty(current_disp_shape+(3,), dtype=DTYPE)
 
             ref2subsamp = np.linalg.inv(self._ref.affine).dot(current_disp_grid2world)
             ref_subsamp_coords = apply_affine2(ref2subsamp, grid)
@@ -636,97 +641,87 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                    (self.def_field_convergence < derivative)):
                 niter += 1
 
-                #project gradient of shift on pedir unit vector
-                
-                for di in range(3):
-                    for gi,ggu,ggd in zip(range(3),
-                                          np.gradient(shift_up[...,di], *current_disp_spacing),
-                                          np.gradient(shift_down[...,di], *current_disp_spacing)):
-                        jac_blip_up[di,gi] = ggu
-                        jac_blip_down[di,gi] = ggd
-                    jac_blip_up[di,di] += 1
-                    jac_blip_down[di,di] += 1
+                jac(shift_up, current_disp_spacing, jac_blip_up)
+                jac(shift_down, current_disp_spacing, jac_blip_down)                
                 jac_det_blip_up[:] = jac_det(jac_blip_up)
                 #print(jac_det_blip_up.min(),jac_det_blip_up.max())
                 jac_det_blip_down[:] = jac_det(jac_blip_down)
                 #print(jac_det_blip_down.min(),jac_det_blip_down.max())
-                    
-                """
-                jac_det_blip_up[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
-                                            zip(np.gradient(shift_up[...,0], *current_disp_spacing), blip_up_pedir_ref), 0)
-                jac_det_blipdown[:] = 1 + reduce(lambda b,a: b+a[0]*a[1],
-                                              zip(np.gradient(shift_down[...,0], *current_disp_spacing), blip_down_pedir_ref), 0)
-                """
-                #jac_det_blip_up[:] = 1
-                #jac_det_blip_down[:] = 1
 
+                blip_up_interp[:] = vfu.warp_3d(
+                    blip_up_ss.get_image(level), shift_up,
+                    np.eye(4), ref2blip_up, np.linalg.inv(blip_up_affine))
+                # np.eye(4): field and target have same affine
 
-                coords_blip_up[:] = apply_affine2(ref2blip_up, grid+np.rollaxis(shift_up/current_disp_spacing,-1,0))
-                coords_blip_down[:] = apply_affine2(ref2blip_down, grid+np.rollaxis(shift_down/current_disp_spacing,-1,0))
-                # apply shift
-                #coords_blip_up[self.pe_dir] += shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
-                #coords_blip_down[self.pe_dir] += shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
+                blip_down_interp[:] = vfu.warp_3d(
+                    blip_down_ss.get_image(level), shift_down,
+                    np.eye(4), ref2blip_down, np.linalg.inv(blip_down_affine))
 
-                # interpolate data and gradient
-                map_coordinates(blip_up_ss.get_image(level), coords_blip_up, blip_up_interp, order=1)
-                map_coordinates(blip_down_ss.get_image(level), coords_blip_down, blip_down_interp, order=1)
+                # geomean
+                blip_up_down_sum[:] = blip_up_interp + blip_down_interp
+                blip_up_down_geomean[:] = 2*(blip_up_interp*blip_down_interp)/blip_up_down_sum
+                blip_up_down_geomean[blip_up_down_sum < 1e-5] = 0
 
-
-                """
-                coords_blip_up[self.pe_dir] += .5
-                coords_blip_down[self.pe_dir] += .5
-                map_coordinates(blip_up_ss.get_image(level), coords_blip_up, blip_up_pe_grad[0], order=1)
-                map_coordinates(blip_down_ss.get_image(level), coords_blip_down, blip_down_pe_grad[0], order=1)
-
-                coords_blip_up[self.pe_dir] -= 1
-                coords_blip_down[self.pe_dir] -= 1
-                map_coordinates(blip_up_ss.get_image(level), coords_blip_up, blip_up_pe_grad[1], order=1)
-                map_coordinates(blip_down_ss.get_image(level), coords_blip_down, blip_down_pe_grad[1], order=1)
-                blip_up_pe_grad[0] -= blip_up_pe_grad[1] 
-                blip_down_pe_grad[0] -= blip_down_pe_grad[1]
-                """
-                # unshift remove for next iterations
-                #coords_blip_up[self.pe_dir] -= shift_up[...,0] / blip_up_ss.get_spacing(0)[self.pe_dir]
-                #coords_blip_down[self.pe_dir] -= shift_down[...,0] / blip_down_ss.get_spacing(0)[self.pe_dir]
-                #coords_blip_up[self.pe_dir] += .5
-                #coords_blip_down[self.pe_dir] += .5
-                
                 for gi,gg in enumerate(np.gradient(blip_up_interp)):
                     step_up[...,gi] = gg
                 for gi,gg in enumerate(np.gradient(blip_down_interp)):
                     step_down[...,gi] = gg
 
-                blip_up_down_sum[:] = blip_up_interp + blip_down_interp
+                step_up /= blip_up_spacing
+                vfu.reorient_vector_field_3d(step_up, blip_up_direction_mtx)
+                step_down /= blip_down_spacing
+                vfu.reorient_vector_field_3d(step_down, blip_down_direction_mtx)                    
 
-                #blip_up_down_geomean[:] = blip_up_down_sum/2
-                blip_up_down_geomean[:] = 2*(blip_up_interp*blip_down_interp)/blip_up_down_sum
-                blip_up_down_geomean[blip_up_down_sum < 1e-5] = 0
+                cost = 3
+                if cost==3:
+                    ks_fact[:] = dipy.align.crosscorr.precompute_cc_factors_3d(
+                        ref_data,
+                        blip_up_down_geomean,
+                        self._cc_radius)
 
-                ks_fact[:] = dipy.align.crosscorr.precompute_cc_factors_3d(
-                    ref_data,
-                    blip_up_down_geomean,
-                    self._cc_radius)
+                    #msk2 = np.logical_and(msk, np.prod(ks_fact[...,3:],-1) > 1e-5)
+                    msk2 = np.prod(ks_fact[...,3:],-1) > 1e-5
 
-                msk2 = np.logical_and(msk, np.prod(ks_fact[...,3:],-1) > 1e-5)
-                #msk2 = np.prod(ks_fact[...,3:],-1) > 1e-5
+                    dxi4_dk[:] = 2.0 * ks_fact[...,2] / (ks_fact[...,3] * ks_fact[...,4]) * \
+                                  (ks_fact[...,0] - ks_fact[...,2]/ ks_fact[...,4] * ks_fact[...,1])
+                    dxi4_dk *= msk2
+                    step_up *= (np.square(blip_down_interp/blip_up_down_sum) * jac_det_blip_up * dxi4_dk)[...,np.newaxis]
+                    step_down *= (np.square(blip_up_interp/blip_up_down_sum) * jac_det_blip_down * dxi4_dk)[...,np.newaxis]
 
-                dxi4_dk[:] = 2.0 * ks_fact[...,2] / (ks_fact[...,3] * ks_fact[...,4]) * \
-                             (ks_fact[...,0] - ks_fact[...,2]/ ks_fact[...,4] * ks_fact[...,1])
-                dxi4_dk *= msk2
-                #dxi4_dk[~msk2] = 0
+                    corr[:] = np.square(ks_fact[...,2])/(ks_fact[...,3]*ks_fact[...,4])
 
-#                step_up[:] = np.square(blip_down_interp/blip_up_down_sum) * jac_det_blip_up * blip_up_pe_grad[0] * dxi4_dk
-#                step_down[:] = np.square(blip_up_interp/blip_up_down_sum) * jac_det_blip_down * blip_down_pe_grad[0] * dxi4_dk
-                step_up *= (np.square(blip_down_interp/blip_up_down_sum) * jac_det_blip_up * dxi4_dk)[...,np.newaxis]
-                step_down *= (np.square(blip_up_interp/blip_up_down_sum) * jac_det_blip_down * dxi4_dk)[...,np.newaxis]
-
+                if cost==4:
+                    msk2 = None
+                    ks_fact[:] = dipy.align.crosscorr.precompute_cc_factors_3d(
+                        blip_up_interp,
+                        blip_down_interp,
+                        self._cc_radius)
+                    corr[:] = ks_fact[...,2]/(ks_fact[...,3]*ks_fact[...,4])
+                    step_up[:] *= (corr * jac_det_blip_up *
+                                   (ks_fact[...,1]-ks_fact[...,2]/ks_fact[...,3]*ks_fact[...,0]))[...,np.newaxis]
+                    step_down[:] *= (corr * jac_det_blip_down *
+                                     (ks_fact[...,0]-ks_fact[...,2]/ks_fact[...,4]*ks_fact[...,1]))[...,np.newaxis]
+                    corr *= ks_fact[...,2]
+                    
                 step_up[~np.isfinite(step_up)] = 0
                 step_down[~np.isfinite(step_down)] = 0
+                corr[~np.isfinite(corr)] = 0
 
+                for a in [step_up, step_down, corr]:
+                    for b in [slice(None,self._cc_radius),slice(-self._cc_radius,None)]:
+                        a[b] = 0
+                        a[:,b] = 0
+                        a[:,:,b] = 0
+                
                 #step_up *= msk2[...,np.newaxis]
                 #step_down *= msk2[...,np.newaxis]
 
                 def_field_sigma_vox = 2.
+
+                step_up *= msk[...,np.newaxis]
+                step_down *= msk[...,np.newaxis]
+                corr *= msk
+                
                 for di in range(3):
                     gaussian_filter1d(step_up, def_field_sigma_vox, axis=di, output=step_up)
                     gaussian_filter1d(step_down, def_field_sigma_vox, axis=di, output=step_down)
@@ -759,38 +754,42 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 if norm_step_down > 0:
                     step_down_eqcon /= norm_step_down
 
-                shift_up[:] += step_up_eqcon * self.step_length
-                shift_down[:] += step_down_eqcon * self.step_length
+                #shift_up[:] += step_up_eqcon * self.step_length
+                #shift_down[:] += step_down_eqcon * self.step_length
 
-                inv_shift_up[:] = dipy.align.vector_fields.invert_vector_field_fixed_point_3d(
+                vfu.compose_vector_fields_3d(shift_up, step_up_eqcon, None, current_disp_world2grid,
+                                             self.step_length, shift_up)
+                vfu.compose_vector_fields_3d(shift_down, step_down_eqcon, None, current_disp_world2grid,
+                                             self.step_length, shift_down)
+                
+                inv_shift_up[:] = vfu.invert_vector_field_fixed_point_3d(
                     shift_up,
                     current_disp_world2grid,
                     current_disp_spacing,
                     20,
                     1e-3, inv_shift_up)
                 
-                inv_shift_down[:] = dipy.align.vector_fields.invert_vector_field_fixed_point_3d(
+                inv_shift_down[:] = vfu.invert_vector_field_fixed_point_3d(
                     shift_down,
                     current_disp_world2grid,
                     current_disp_spacing,
                     20,
                     1e-3, inv_shift_down)
 
-                shift_up[:] = dipy.align.vector_fields.invert_vector_field_fixed_point_3d(
+                shift_up[:] = vfu.invert_vector_field_fixed_point_3d(
                     inv_shift_up,
                     current_disp_world2grid,
                     current_disp_spacing,
                     20,
                     1e-3, shift_up)
                 
-                shift_down[:] = dipy.align.vector_fields.invert_vector_field_fixed_point_3d(
+                shift_down[:] = vfu.invert_vector_field_fixed_point_3d(
                     inv_shift_down,
                     current_disp_world2grid,
                     current_disp_spacing,
                     20,
                     1e-3, shift_down)
 
-                corr[:] = np.square(ks_fact[...,2])/(ks_fact[...,3]*ks_fact[...,4])
                 corr[np.logical_or(corr>1,corr<-1)] = 0
                 #nrgy = -corr[np.isfinite(corr)].mean()
                 energy = -(corr[msk2].sum())
@@ -812,9 +811,13 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 del blip_up_down_geomean, corr, blip_up_interp, blip_down_interp
             self.full_energy_profile.extend(self.energy_list)
         
-        # todo: last jacobian update
+        # last jacobian update for output
+        jac(shift_up, current_disp_spacing, jac_blip_up)
+        jac(shift_down, current_disp_spacing, jac_blip_down)        
+        jac_det_blip_up[:] = jac_det(jac_blip_up)
+        jac_det_blip_down[:] = jac_det(jac_blip_down)
         
-        return shift_up[...,0], shift_down[...,0], blip_up_down_geomean,\
+        return shift_up, shift_down, blip_up_down_geomean,\
             blip_up_interp, blip_down_interp,\
             corr, jac_det_blip_up, jac_det_blip_down
 
@@ -1772,7 +1775,15 @@ def resample_mat_shape(mat,shape,voxsize):
     return newmat,tuple(newshape.astype(np.int32).tolist())
 
 
+def jac(shift, disp_spacing, jac_out):
+    for di in range(3):
+        for gi,gg in enumerate(np.gradient(shift[...,di], *disp_spacing)):
+            jac_out[di,gi] = gg
+        jac_out[di,di] += 1
+
 def jac_det(jac):
     return (jac[0,0])*((jac[1,1])*(jac[2,2])-(jac[1,2]*jac[2,1])) -\
         jac[0,1]*((jac[1,0]*jac[2,2])-(jac[1,2]*jac[2,0])) +\
         jac[0,2]*((jac[1,0]*jac[2,1])-(jac[1,1]*jac[2,1]))
+
+
