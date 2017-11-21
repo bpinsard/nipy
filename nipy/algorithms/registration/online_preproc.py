@@ -499,7 +499,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         self.def_update_n_iter = def_update_n_iter
         self.def_update_inv_iter = def_update_inv_iter
 
-        self._gradient_descent_tol = gradient_descent_tol 
+        self._gradient_descent_tol = gradient_descent_tol
+
+        self._nmin_samples_per_slab = 30
 
         self.orkf_convergence = orkf_convergence
         self.orkf_transition_cov = orkf_transition_cov
@@ -856,6 +858,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
 
     def _update_def_field(self, df, sl, param, conv, max_iter):
         print 'update def field'
+        if np.count_nonzero(self._slab_mask) < self._nmin_samples_per_slab:
+            print 'not enough sample'
+            return
         nrgy_list = []
         self._df_epi_step_up.fill(0)
 
@@ -878,13 +883,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         derivative = np.inf
         niter = 0
 
-        slab_direction, slab_spacing = get_direction_and_spacings(slab_grid2world, self.dim)
+        slab_direction, slab_spacing = get_direction_and_spacings(static_grid2world, self.dim)
         slab_direction_mtx = np.eye(self.dim + 1)
         slab_direction_mtx[:self.dim, :self.dim] = slab_direction
-
-        #static_direction, static_spacing = get_direction_and_spacings(static_grid2world, self.dim)
-        #static_direction_mtx = np.eye(self.dim + 1)
-        #static_direction_mtx[:self.dim, :self.dim] = static_direction
 
         static_pedir_ref = static_grid2world[:3,self.pe_dir].copy()
         static_pedir_ref /= np.sqrt(np.square(static_pedir_ref).sum())
@@ -946,7 +947,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             
             vfu.compose_vector_fields_3d(self._df_data, self._df_epi_step_up,
                                          shift_grid2static_grid, static_world2grid,
-                                         1., self._df_data)
+                                         self.step_length, self._df_data)
 
             #vfu.compose_vector_fields_3d(self._df_data, fw_step,
             #                              shift_grid2slab_grid, slab_world2grid,
@@ -1021,8 +1022,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
 
         self._df_epi_step_up = np.empty(self.sl_data.shape+(3,), dtype=floating)
         ## Bias field update
-        #self._update_def_field(df, range(stack.nslices), first_frame_reg,
-        #                       self.def_field_convergence, self.def_update_n_iter)
+        
+        self._update_def_field(df, range(stack.nslices), first_frame_reg,
+                               self.def_field_convergence, self.def_update_n_iter)
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
@@ -1051,7 +1053,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             for d in self.in_slice_axes:
                 gaussian_filter1d(self.sl_data_smooth, 1, d, output=self.sl_data_smooth)
             self.sl_data_smooth -= self.sl_data_smooth.min()
-            self.sl_data_smooth /= self.sl_data_smooth.max()
+            mm = self.sl_data_smooth.max()
+            if mm > 0: self.sl_data_smooth /= mm
 
             self._slab_affine = slab_affine(sl, self.slice_axis)
             
@@ -1091,8 +1094,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             self.filtered_state_covariances.append(update_cov)            
 
             ## Bias field update
-            #self._update_def_field(df, sl, update_params,
-            #                      self.def_field_convergence, self.def_update_n_iter)
+            self._update_def_field(df, sl, update_params,
+                                  self.def_field_convergence, self.def_update_n_iter)
             
             reg = self.transform.param_to_matrix(update_params*self._precond)
             reg_grid2ref = reg.dot(self.affine)
@@ -1141,8 +1144,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         current_affine = transform.param_to_matrix(init_params)
         
         opt = dipy.core.optimize.Optimizer(
-            mi_cost_and_gradient,
-            #cc_cost_and_gradient,
+            #mi_cost_and_gradient,
+            cc_cost_and_gradient,
             #cc_cost,
             init_params,
             method='CG',
@@ -1154,6 +1157,11 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
     def _compute_mi_cost_gradient(self, param, df):
         self._sample_ref_new(param, df, rigid_gradient=True)
 
+        if np.count_nonzero(self._slab_mask) < self._nmin_samples_per_slab:
+            self._nrgy=2
+            self._rigid_gradient[:] = 0
+            return
+
         transform = dipy.align.transforms.RigidTransform3D()
         current_affine = transform.param_to_matrix(param*self._precond)
         slab_grid2world = current_affine.dot(self._init_reg).dot(self.affine).dot(self._slab_affine)
@@ -1161,8 +1169,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         H = self.histogram
         slab_mask = self._slab_mask.astype(np.int32)
         #H.update_pdfs_sparse(self.sl_data[self._slab_mask].astype(np.double), self._ref_interp[0,self._slab_mask].astype(np.double))
-        H.update_pdfs_dense(self.sl_data_smooth.astype(np.double), self._ref_interp[0].astype(np.double))
-        #        slab_mask, slab_mask)
+        H.update_pdfs_dense(self.sl_data_smooth.astype(np.double), self._ref_interp[0].astype(np.double),
+                            slab_mask, slab_mask)
            
         """
         H.update_gradient_sparse(
@@ -1188,8 +1196,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             self.sl_data_smooth.astype(np.double), self._ref_interp[0].astype(np.double),
             slab_grid2world,
             np.rollaxis(self._ref_interp[4:],0,4).astype(np.double),
-            #smask=slab_mask,
-            #mmask=slab_mask
+            smask=slab_mask,
+            mmask=slab_mask
         )
 
         self._nrgy = dipy.align.parzenhist.compute_parzen_mi(
@@ -1205,9 +1213,15 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         corr, temp = self._compute_cc_cost_gradient(param, df, rigid_gradient=True)
         
         temp_mask = np.logical_and(np.isfinite(temp), self._slab_mask)
+        if np.count_nonzero(temp_mask) < self._nmin_samples_per_slab:
+            print 'not enough sample'
+            self._nrgy=2
+            self._rigid_gradient[:] = 0
+            return
+
         self._rigid_gradient[:] = (temp[temp_mask] * self._ref_interp[1:,temp_mask]).mean(1)
         self._rigid_gradient /= -self.orkf_jacobian_epsilon
-
+        
         self._nrgy = -corr[temp_mask].mean()
 
     def _compute_cc_cost_gradient(self, param, df, rigid_gradient=False):
@@ -1229,6 +1243,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         #corr = temp / smm # sfm / (sff * smm)
         #temp[:] = 2.0 * corr * (Ji - temp * Ii)
         corr *= sfm
+        corr[np.isnan(corr)] = 0
+        temp[np.isnan(temp)] = 0
         return corr, temp
 
     def _compute_cc_factors(self, static, moving):
