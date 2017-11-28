@@ -1005,14 +1005,16 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         """
         # register first frame
         self.sl_data = self._first_frame.astype(DTYPE)
+
+        epi_smoothing = self._ss_sigma_factor*(2**self.def_field_min_level-1)
         self.sl_data_smooth = self.sl_data.copy() 
         for d in self.in_slice_axes:
-            gaussian_filter1d(self.sl_data_smooth, 1, d, output=self.sl_data_smooth)
+            gaussian_filter1d(self.sl_data_smooth, epi_smoothing, d, output=self.sl_data_smooth)
         self.sl_data_smooth -= self.sl_data_smooth.min()
         self.sl_data_smooth /= self.sl_data_smooth.max()
 
-        self.histogram = dipy.align.parzenhist.ParzenJointHistogram(32)
-        self.histogram.setup(self.sl_data_smooth, self._ref_scale_space.get_image(self.def_field_min_level))
+        #self.histogram = dipy.align.parzenhist.ParzenJointHistogram(32)
+        #self.histogram.setup(self.sl_data_smooth, self._ref_scale_space.get_image(self.def_field_min_level))
 
         self._slab_affine = np.eye(4)
         first_frame_reg = self._register_slab(
@@ -1023,8 +1025,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         self._df_epi_step_up = np.empty(self.sl_data.shape+(3,), dtype=floating)
         ## Bias field update
         
-        self._update_def_field(df, range(stack.nslices), first_frame_reg,
-                               self.def_field_convergence, self.def_update_n_iter)
+        #self._update_def_field(df, range(stack.nslices), first_frame_reg,
+        #                       self.def_field_convergence, self.def_update_n_iter)
 
         stack_it = stack.iter_slabs()
         stack_has_data = True
@@ -1051,7 +1053,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
 
             self.sl_data_smooth[:] = self.sl_data
             for d in self.in_slice_axes:
-                gaussian_filter1d(self.sl_data_smooth, 1, d, output=self.sl_data_smooth)
+                gaussian_filter1d(self.sl_data_smooth, epi_smoothing, d, output=self.sl_data_smooth)
             self.sl_data_smooth -= self.sl_data_smooth.min()
             mm = self.sl_data_smooth.max()
             if mm > 0: self.sl_data_smooth /= mm
@@ -1094,11 +1096,11 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             self.filtered_state_covariances.append(update_cov)            
 
             ## Bias field update
-            self._update_def_field(df, sl, update_params,
-                                  self.def_field_convergence, self.def_update_n_iter)
+            #self._update_def_field(df, sl, update_params,
+            #                      self.def_field_convergence, self.def_update_n_iter)
             
             reg = self.transform.param_to_matrix(update_params*self._precond)
-            reg_grid2ref = reg.dot(self.affine)
+            reg_grid2ref = reg.dot(self._init_reg).dot(self.affine)
 
             if yield_raw:
                 yield fr, sl, reg_grid2ref, sl_data
@@ -1136,7 +1138,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         def cc_cost(p):
             if np.any(self._last_param != p):
                 self._last_param[:] = p
-                self._compute_cc_cost_rigid_gradient(p, df)
+                self._compute_cc_cost(p, df)
             print ('%.8f  ' * 7)%((self._nrgy,)+tuple(p))
             return self._nrgy
 
@@ -1150,7 +1152,7 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             init_params,
             method='CG',
             jac=True,
-            options=dict(disp=True, gtol=gtol, maxiter=8)
+            options=dict(disp=True, gtol=gtol, maxiter=4, epsilon=1e-3)
         )
         return opt.xopt
 
@@ -1207,7 +1209,17 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         # neg MI
         self._nrgy *= -1
         self._rigid_gradient *= -self._precond
-            
+
+    def _compute_cc_cost(self, param, df):
+        
+        corr, temp = self._compute_cc_cost_gradient(param, df, rigid_gradient=False)
+        temp_mask = np.logical_and(np.isfinite(corr), self._slab_mask)
+        if np.count_nonzero(temp_mask) < self._nmin_samples_per_slab:
+            print 'not enough sample'
+            self._nrgy = 2
+        else:
+            self._nrgy = -corr[temp_mask].mean()
+
     def _compute_cc_cost_rigid_gradient(self, param, df):
         
         corr, temp = self._compute_cc_cost_gradient(param, df, rigid_gradient=True)
