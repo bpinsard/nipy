@@ -517,7 +517,12 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         self._voxel_size = stack._voxel_size
         #frame_iterator = stack.iter_frame()
         nvol, self.affine, self._first_frame = frame_iterator.next()
+        self.inv_affine = np.linalg.inv(self.affine)
         self._epi2anat = np.linalg.inv(self.mask.affine).dot(self._anat_reg).dot(self.affine)
+        # affine from vox to world with reference in middle of fov
+        fov_center_mm  = self.affine.dot((np.asarray(stack._shape[:3]+(3,))-1)/2.)
+        self.center_affine = self.affine.copy()
+        self.center_affine[:3,3] -= fov_center_mm[:3]
 
         self._first_frame = self._first_frame.astype(DTYPE)
         
@@ -694,14 +699,21 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             (slice(0,None) if self.slice_axis==d2 else None) for d2 in range(sl_data.ndim)]]
 
 
+        
+        #current_affine = self.inv_affine.dot(new_reg.as_affine().dot(self.affine))
+        #current_affine = new_reg.as_affine()
+        current_affine = np.linalg.inv(self.center_affine).dot(new_reg.as_affine()).dot(self.center_affine)
         # compute interpolation coordinates for registration + jacobian delta step
-        self._slab_coords[0] = apply_affine(new_reg.as_affine(), self._slab_vox_idx)
+        self._slab_coords[0] = apply_affine(current_affine, self._slab_vox_idx)
         for pi in range(6):
             reg_delta = Rigid(radius=RADIUS)
             params = new_reg.param.copy()
             params[pi] += self.iekf_jacobian_epsilon
             reg_delta.param = params
-            self._slab_coords[pi+1] = apply_affine(reg_delta.as_affine(), self._slab_vox_idx)
+            #delta_affine = self.inv_affine.dot(reg_delta.as_affine().dot(self.affine))
+            #delta_affine = reg_delta.as_affine()
+            delta_affine = np.linalg.inv(self.center_affine).dot(reg_delta.as_affine()).dot(self.center_affine)
+            self._slab_coords[pi+1] = apply_affine(delta_affine, self._slab_vox_idx)
 
         # compute coordinates in anat reference
         slab2anat = self._anat_reg.dot(self.affine).dot(new_reg.as_affine())
@@ -1009,3 +1021,5 @@ def resample_mat_shape(mat,shape,voxsize):
     newmat[:3,:3] = np.diag((voxsize/old_voxsize)).dot(mat[:3,:3])
     newmat[:3,3] = mat[:3,3]+newmat[:3,:3].dot(res/voxsize/2)
     return newmat,tuple(newshape.astype(np.int32).tolist())
+
+    
