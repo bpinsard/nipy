@@ -980,7 +980,11 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         self._first_frame = first_frame.astype(DTYPE)
         self._epi2ref = npl.inv(self._ref.affine).dot(self._init_reg).dot(self.affine)
         
-        
+        # affine from vox to world with reference in middle of fov
+        fov_center_mm  = self.affine.dot((np.asarray(stack._shape[:3]+(3,))-1)/2.)
+        self.center_affine = self.affine.copy()
+        self.center_affine[:3,3] -= fov_center_mm[:3]
+
         self.transform = dipy.align.transforms.RigidTransform3D()
         self._precond = np.asarray([1e-2]*3+[1.]*3)
 
@@ -1141,9 +1145,6 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                 self._compute_cc_cost(p, df)
             print ('%.8f  ' * 7)%((self._nrgy,)+tuple(p))
             return self._nrgy
-
-        transform = dipy.align.transforms.RigidTransform3D()
-        current_affine = transform.param_to_matrix(init_params)
         
         opt = dipy.core.optimize.Optimizer(
             #mi_cost_and_gradient,
