@@ -183,7 +183,7 @@ class EPIOnlineResample(object):
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
-            weights = np.exp(-(dists/rbf_sigma)**2)
+            weights = np.exp(-(dists/rbf_sigma)**2) # gaussian kernel 
             if not normals is None:
                 # perform anisotropic kernel RBF
                 # the kernel is configure so that 2SD is reached at surface
@@ -200,7 +200,7 @@ class EPIOnlineResample(object):
             np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
             np.add.at(out_weights, idx[non0], weights[non0])
         out /= out_weights
-        out[np.isinf(out)] = np.nan
+        out[np.isinf(out)] = np.nan # no data found close
 
 
     def scatter_resample(self, data, out, slabs, transforms, coords, mask=True):
@@ -586,13 +586,15 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         
         new_reg = Rigid(radius=RADIUS)
 
-        self.slices_pred_covariance = dict()
+        #self.slices_pred_covariance = dict()
         self.tmp_states=[]
         while stack_has_data:            
             
             pred_state = transition_matrix.dot(self.filtered_state_means[-1])
+            #pred_state = initial_state_mean.copy() # disable IEKF
             estim_state = pred_state.copy()
             pred_covariance = self.filtered_state_covariances[-1] + transition_covariance
+            #pred_covariance = initial_state_covariance # disable IE
             #if not str(sl) in self.slices_pred_covariance:
             #    self.slices_pred_covariance[str(sl)] = np.eye(ndim_state, dtype=DTYPE) * self.iekf_init_state_cov
             #pred_covariance = self.slices_pred_covariance[str(sl)] + transition_covariance
@@ -650,7 +652,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self.niters.append(niter)
             self.filtered_state_means.append(estim_state)
             self.filtered_state_covariances.append(state_covariance)
-            self.slices_pred_covariance[str(sl)] = state_covariance
+            #self.slices_pred_covariance[str(sl)] = state_covariance
 
             update = estim_state[:6]-self.filtered_state_means[-2][:6]
             new_reg.param = estim_state[:6]
@@ -716,7 +718,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
             self._slab_coords[pi+1] = apply_affine(delta_affine, self._slab_vox_idx)
 
         # compute coordinates in anat reference
-        slab2anat = self._anat_reg.dot(self.affine).dot(new_reg.as_affine())
+        slab2anat = self._anat_reg.dot(self.affine).dot(current_affine)
         self._anat_slab_coords[:] = apply_affine(slab2anat, self._slab_vox_idx)
         self._slab_shift[:] = self.sample_shift(self._slab_vox_idx, slab2anat)
         phase_vec = slab2anat[:3,self.pe_dir] * self.fmap_scale * sl_data.shape[self.pe_dir]
