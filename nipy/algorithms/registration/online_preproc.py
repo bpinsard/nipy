@@ -138,7 +138,7 @@ class EPIOnlineResample(object):
                              rbf_sigma=1, 
                              kneigh_dens=None,
                              mask=True):
-        dist_ub = rbf_sigma*3 # 3 std in all directions
+        dist_ub = rbf_sigma*3 # truncate kernel at 3SD
         if kneigh_dens is None:
             kneigh_dens = int((2*dist_ub)**3) # all points enclosed in a cube
 
@@ -183,22 +183,27 @@ class EPIOnlineResample(object):
             idx2 = (np.ones(kneigh_dens,dtype=np.int)*np.arange(len(d))[:,np.newaxis])[not_inf]
             idx = idx[not_inf]
             dists = dists[not_inf]
-            weights = np.exp(-(dists/rbf_sigma)**2) # gaussian kernel 
+            weights = np.exp(-.5*(dists/rbf_sigma)**2) # gaussian kernel 
+            #weights = 1/dists**2 # shepards IDW
             if not normals is None:
                 # perform anisotropic kernel RBF
                 # the kernel is configure so that 2SD is reached at surface
-                normal_norm_sq = (normals[idx]**2).sum(-1)
-                constrained_mask = normal_norm_sq > 0
-                dists_proj_norm = (((coords[idx]-points[idx2])*(normals[idx])).sum(-1)/normal_norm_sq)[constrained_mask]
-                weights[constrained_mask] *= np.exp(-(dists_proj_norm/.5)**2)
+                #normal_norm = np.sqrt((normals[idx]**2).sum(-1))
+                constrained_mask = np.any(normals[idx]!=0,1)
+                dists_proj_norm = (((coords[idx]-points[idx2])*(normals[idx])).sum(-1)/2)[constrained_mask]
+                weights[constrained_mask] *= np.exp(-dists_proj_norm**2/(2*.5**2))
+                weights[constrained_mask] *= dists_proj_norm < 2 # truncate
             if not pve_map is None:
                 if mask:
                     weights *= slab_pve[slab_mask][idx2]
                 else:
                     weights *= slab_pve.ravel()[idx2]
-            non0 = weights > 1e-2 # truncate
-            np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
-            np.add.at(out_weights, idx[non0], weights[non0])
+            #non0 = weights > 1e-3 # truncate
+            #non0 = weights > np.exp(-3**2/2.) # truncate at 3 SD
+            #np.add.at(out, idx[non0], d[idx2[non0]]*weights[non0])
+            #np.add.at(out_weights, idx[non0], weights[non0])
+            np.add.at(out, idx, d[idx2]*weights)
+            np.add.at(out_weights, idx, weights)
         out /= out_weights
         out[np.isinf(out)] = np.nan # no data found close
 
