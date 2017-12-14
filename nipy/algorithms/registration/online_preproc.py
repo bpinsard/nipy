@@ -757,7 +757,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
         """
 
 
-        if self._register_gradient and False:
+        if self._register_gradient:
 
             self._interp_data[:] = map_coordinates(
                 self.register_refvol, 
