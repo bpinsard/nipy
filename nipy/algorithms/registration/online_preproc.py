@@ -1123,7 +1123,9 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             self._ref_interp = np.zeros((7,)+sl_data.shape, dtype=DTYPE)
             self._cc_factors = np.zeros(sl_data.shape+(5,), dtype=DTYPE)
             self._slab_mask = np.zeros(sl_data.shape, dtype=np.bool)
-
+            self._sl_data_ssc = np.zeros((6,)+sl_data.shape, dtype=DTYPE)
+            self._ref_interp_ssc = np.zeros((7,6)+sl_data.shape, dtype=DTYPE)
+            
         self._last_param = np.zeros_like(init_params)+np.inf
         self._rigid_gradient = np.zeros_like(init_params)
         
@@ -1139,16 +1141,32 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             print ('%.8f  ' * 7)%((self._nrgy,)+tuple(p))
             return self._nrgy, self._rigid_gradient
 
+        def ssc_cost_and_gradient(p):
+            if np.any(self._last_param != p):
+                self._last_param[:] = p
+                self._compute_ssc_cost_gradient(p, df)
+            print ('%.8f  ' * 7)%((self._nrgy,)+tuple(p))
+            return self._nrgy, self._rigid_gradient
+
+        
         def cc_cost(p):
             if np.any(self._last_param != p):
                 self._last_param[:] = p
                 self._compute_cc_cost(p, df)
             print ('%.8f  ' * 7)%((self._nrgy,)+tuple(p))
             return self._nrgy
+
+        if True:
+            for si in range(self.sl_data_smooth.shape[self.slice_axis]):        
+                compute_ssc_desc(
+                    self.sl_data_smooth[self._slice(slice_axis=si)],
+                    self.ssc_sigma,
+                    desc=self._sl_data_ssc[(slice(None),)+self._slice(slice_axis=si)])
         
         opt = dipy.core.optimize.Optimizer(
             #mi_cost_and_gradient,
-            cc_cost_and_gradient,
+            #cc_cost_and_gradient,
+            ssc_cost_and_gradient,
             #cc_cost,
             init_params,
             method='CG',
@@ -1157,6 +1175,20 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         )
         return opt.xopt
 
+    def _compute_ssc_cost_gradient(self, param, df):
+        self._sample_ref_new(param, df, rigid_gradient=True)
+        for pi in range(7):
+            for si in range(self._ref_interp[pi].shape[self.slice_axis]):
+                compute_ssc_desc(
+                    self._ref_interp[(pi,)+self._slice(slice_axis=si)],
+                    self.ssc_sigma,
+                    self._ref_interp_ssc[(pi,slice(None))+self._slice(slice_axis=si)])
+        self._ref_interp_ssc -= self._sl_data_ssc
+        np.abs(self._ref_interp_ssc, out=self._ref_interp_ssc)
+        self._ref_interp_ssc[:,0] = self._ref_interp_ssc.sum(1)/self._ref_interp_ssc.shape[1]
+        self._nrgy = self._ref_interp_ssc[0,0].mean()
+        self._rigid_gradient[:] = (self._ref_interp_ssc[1:,0]-self._ref_interp_ssc[0,0]).reshape(6,-1).mean(1)/self.orkf_jacobian_epsilon
+    
     def _compute_mi_cost_gradient(self, param, df):
         self._sample_ref_new(param, df, rigid_gradient=True)
 
@@ -1332,13 +1364,14 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                     moving_world2grid,
                     out_shape = slab_shape)
             
-            self._ref_interp[1:] -= self._ref_interp[0]
+            #self._ref_interp[1:] -= self._ref_interp[0]
             #self._ref_interp[1:] /= self.orkf_jacobian_epsilon
+            """
             for b in [0,-1]:
                 self._ref_interp[1:,b] = 0
                 self._ref_interp[1:,:,b] = 0
             self._ref_interp[:,np.any(np.isnan(self._ref_interp),0)] = 0
-
+            """
         """
         if rigid_gradient:
             grad = np.empty(tuple(self._ref_scale_space.get_domain_shape(0))+(3,), dtype=np.float32)
@@ -1956,3 +1989,25 @@ def slab_affine(sl, slice_axis):
         a[slice_axis,slice_axis] = np.diff(sl)[0]
     a[slice_axis,-1] = sl[0]
     return a
+
+def compute_ssc_desc(image, sigma, desc=None):
+    ndim = image.ndim
+    coords = list(itertools.product(*([[2,-2]]*ndim)))
+    ncoords = len(coords)
+    out_slice = slice(1,-1)
+    def get_slice(c):
+        return tuple([(slice(cc,None) if cc>0 else slice(None,cc)) for cc in c])
+    desc_shape = (ncoords*(ncoords-1)/2,) + image.shape
+    if desc is None:
+        desc = np.zeros(desc_shape, dtype=np.float32)
+    else:
+        desc.fill(0)
+    for i,c in enumerate(coords):
+        cim = image[get_slice(c)]
+        for i2,c2 in enumerate(coords[:i]):
+            idx = i*(i-1)/2+i2
+            cim2 = image[get_slice(c2)]
+            desc[(slice(idx,idx+1),)+tuple([out_slice]*ndim)] = cim-cim2
+    desc[:] = -np.square(desc)/sigma**2
+    desc[:] = np.exp(desc)
+    return desc
