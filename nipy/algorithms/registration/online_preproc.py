@@ -1162,7 +1162,12 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
                     self.sl_data_smooth[self._slice(slice_axis=si)],
                     self.ssc_sigma,
                     desc=self._sl_data_ssc[(slice(None),)+self._slice(slice_axis=si)])
-        
+
+        self._sample_ref_new(init_params, df)
+        if np.count_nonzero(self._slab_mask) < self._nmin_samples_per_slab:
+            return init_params
+
+
         opt = dipy.core.optimize.Optimizer(
             #mi_cost_and_gradient,
             #cc_cost_and_gradient,
@@ -1171,12 +1176,13 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
             init_params,
             method='CG',
             jac=True,
-            options=dict(disp=True, gtol=gtol, maxiter=4, epsilon=1e-3)
+            options=dict(disp=True, gtol=gtol, maxiter=16, epsilon=1e-3)
         )
         return opt.xopt
 
     def _compute_ssc_cost_gradient(self, param, df):
         self._sample_ref_new(param, df, rigid_gradient=True)
+        #self._ref_interp /= self._ref_interp.max()
         for pi in range(7):
             for si in range(self._ref_interp[pi].shape[self.slice_axis]):
                 compute_ssc_desc(
@@ -1186,8 +1192,8 @@ class EPIOnlineRealignUndistort(EPIOnlineResample):
         self._ref_interp_ssc -= self._sl_data_ssc
         np.abs(self._ref_interp_ssc, out=self._ref_interp_ssc)
         self._ref_interp_ssc[:,0] = self._ref_interp_ssc.sum(1)/self._ref_interp_ssc.shape[1]
-        self._nrgy = self._ref_interp_ssc[0,0].mean()
-        self._rigid_gradient[:] = (self._ref_interp_ssc[1:,0]-self._ref_interp_ssc[0,0]).reshape(6,-1).mean(1)/self.orkf_jacobian_epsilon
+        self._nrgy = self._ref_interp_ssc[0,0,self._slab_mask].mean()
+        self._rigid_gradient[:] = (self._ref_interp_ssc[1:,0,self._slab_mask]-self._ref_interp_ssc[0,0,self._slab_mask]).mean(1)/self.orkf_jacobian_epsilon
     
     def _compute_mi_cost_gradient(self, param, df):
         self._sample_ref_new(param, df, rigid_gradient=True)
