@@ -661,7 +661,7 @@ class OnlineRealignBiasCorrection(EPIOnlineResample):
 
             update = estim_state[:6]-self.filtered_state_means[-2][:6]
             new_reg.param = estim_state[:6]
-            self.matrices.append(new_reg.as_affine())
+            self.matrices.append(np.linalg.inv(self.center_affine).dot(new_reg.as_affine()).dot(self.center_affine))
             print 'nvox',self._nvox_in_slab_mask,'_'*100 + '\n'
             print 'update : ', ('% 2.5f,'*6)%tuple(update)
             print ('%.5f %.5f :' + '% 2.5f,'*6)%((convergence, mean_cost,)+tuple(estim_state[:6]))
